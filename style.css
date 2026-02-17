@@ -1,0 +1,106 @@
+:vars {
+    --bg: alpha(rgb(26, 26, 30), 0.85);
+    --bg-darker: alpha(rgb(18, 18, 22), 0.95);
+    --fg: #cdd6f4;
+    --fg-dim: #9399b2;
+    --accent: #33ccff;
+    --accent-green: #00ff99;
+    --border: alpha(#33ccff, 0.3);
+    --ws-active: #33ccff;
+    --ws-occupied: alpha(rgb(69, 71, 90), 0.7);
+    --ws-empty: alpha(rgb(69, 71, 90), 0.3);
+    --ws-empty-text: alpha(rgb(147, 153, 178), 0.5);
+    --dark-text: #1e1e2e;
+}
+
+* {
+    all: unset;
+    color: var(--fg);
+    font-family: "JetBrains Mono Nerd Font", "JetBrainsMono Nerd Font", monospace;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+#bar-inner {
+    background-color: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding: 0px 12px;
+    min-height: 30px;
+}
+
+/* Workspaces */
+#workspaces button {
+    min-width: 16px;
+    min-height: 16px;
+    padding: 0px 4px;
+    border-radius: 4px;
+    background-color: var(--ws-empty);
+    color: var(--ws-empty-text);
+}
+
+#workspaces button label {
+    font-size: 12px;
+}
+
+#workspaces button.occupied {
+    background-color: var(--ws-occupied);
+    color: var(--fg);
+}
+
+#workspaces button.active {
+    background-color: var(--ws-active);
+    color: var(--dark-text);
+    font-weight: bold;
+}
+
+/* Active window */
+#active-window label {
+    color: var(--fg-dim);
+}
+
+/* Clock */
+#clock-time {
+    font-weight: bold;
+    color: var(--fg);
+}
+
+#clock-date {
+    color: var(--fg-dim);
+}
+
+/* Battery */
+#battery image {
+    color: var(--accent-green);
+}
+
+/* Volume */
+#volume image {
+    color: var(--accent);
+}
+
+/* Network */
+#network image {
+    color: var(--accent);
+}
+
+/* Kubernetes context */
+#kube-context {
+    padding: 0px 6px;
+    border-radius: 6px;
+    background-color: alpha(rgb(69, 71, 90), 0.4);
+}
+
+#kube-context label {
+    color: #a6adc8;
+}
+
+#kube-menu-item {
+    padding: 4px 8px;
+    border-radius: 4px;
+    min-width: 120px;
+}
+
+#kube-menu-item.active {
+    color: var(--accent);
+    font-weight: bold;
+}

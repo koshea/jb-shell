@@ -1,0 +1,14 @@
+[project]
+name = "jb-shell"
+version = "0.1.0"
+description = "Fabric desktop shell bar for Hyprland"
+requires-python = ">=3.11"
+dependencies = [
+    "fabric",
+]
+
+[project.scripts]
+jb-shell = "main:main"
+
+[tool.uv.sources]
+fabric = { git = "https://github.com/Fabric-Development/fabric.git" }
