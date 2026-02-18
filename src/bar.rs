@@ -7,10 +7,12 @@ use relm4::{Component, ComponentController, Controller};
 use crate::hyprland_listener::HyprlandMsg;
 use crate::widgets::active_window::ActiveWindowWidget;
 use crate::widgets::battery::BatteryModel;
+use crate::widgets::calendar::{CalendarInit, CalendarModel};
 use crate::widgets::clock::ClockModel;
 use crate::widgets::gcloud_config::GcloudModel;
 use crate::widgets::kube_context::KubeModel;
 use crate::widgets::network::NetworkModel;
+use crate::widgets::notifications::NotificationModel;
 use crate::widgets::volume::VolumeModel;
 use crate::widgets::workspaces::WorkspacesWidget;
 
@@ -25,6 +27,8 @@ pub struct StatusBar {
     _network: Controller<NetworkModel>,
     _kube: Controller<KubeModel>,
     _gcloud: Controller<GcloudModel>,
+    _notifications: Controller<NotificationModel>,
+    _calendar: Controller<CalendarModel>,
     monitor_name: String,
 }
 
@@ -53,6 +57,14 @@ impl StatusBar {
         let network = NetworkModel::builder().launch(()).detach();
         let kube = KubeModel::builder().launch(monitor.clone()).detach();
         let gcloud = GcloudModel::builder().launch(monitor.clone()).detach();
+        let notifications = NotificationModel::builder().launch(monitor.clone()).detach();
+        let notif_sender = notifications.sender().clone();
+        let calendar = CalendarModel::builder()
+            .launch(CalendarInit {
+                monitor: monitor.clone(),
+                notif_sender,
+            })
+            .detach();
 
         // Start box (left)
         let start_box = GtkBox::new(Orientation::Horizontal, 12);
@@ -66,6 +78,7 @@ impl StatusBar {
 
         // End box (right)
         let end_box = GtkBox::new(Orientation::Horizontal, 8);
+        end_box.append(calendar.widget());
         end_box.append(volume.widget());
         end_box.append(network.widget());
         end_box.append(battery.widget());
@@ -89,6 +102,8 @@ impl StatusBar {
             _network: network,
             _kube: kube,
             _gcloud: gcloud,
+            _notifications: notifications,
+            _calendar: calendar,
             monitor_name: hyprland_monitor_name.to_string(),
         }
     }

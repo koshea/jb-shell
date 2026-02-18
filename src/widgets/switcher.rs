@@ -268,7 +268,12 @@ fn position_popup(popup: &Window, trigger: &Button) {
 
     if let Some(bounds) = trigger.compute_bounds(root.upcast_ref::<gtk4::Widget>()) {
         popup.set_margin(Edge::Top, (bounds.y() + bounds.height()) as i32);
-        popup.set_margin(Edge::Left, bounds.x() as i32);
+
+        let screen_w = root.width();
+        let (_, popup_natural, _, _) = popup.measure(gtk4::Orientation::Horizontal, -1);
+        let popup_w = popup_natural.max(200);
+        let left = (bounds.x() as i32).min(screen_w - popup_w).max(0);
+        popup.set_margin(Edge::Left, left);
     } else {
         popup.set_margin(Edge::Top, 32);
         popup.set_margin(Edge::Left, 0);

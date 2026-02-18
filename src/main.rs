@@ -1,4 +1,5 @@
 mod bar;
+mod google_calendar;
 mod hyprland_listener;
 mod widgets;
 mod workspace_capture;
