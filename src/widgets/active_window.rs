@@ -21,7 +21,11 @@ impl ActiveWindowWidget {
         let display = if title.is_empty() {
             "Desktop".to_string()
         } else if title.chars().count() > 60 {
-            let end: usize = title.char_indices().nth(57).map(|(i, _)| i).unwrap_or(title.len());
+            let end: usize = title
+                .char_indices()
+                .nth(57)
+                .map(|(i, _)| i)
+                .unwrap_or(title.len());
             format!("{}...", &title[..end])
         } else {
             title.to_string()

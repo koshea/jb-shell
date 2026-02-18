@@ -8,6 +8,7 @@ use crate::hyprland_listener::HyprlandMsg;
 use crate::widgets::active_window::ActiveWindowWidget;
 use crate::widgets::battery::BatteryModel;
 use crate::widgets::clock::ClockModel;
+use crate::widgets::gcloud_config::GcloudModel;
 use crate::widgets::kube_context::KubeModel;
 use crate::widgets::network::NetworkModel;
 use crate::widgets::volume::VolumeModel;
@@ -23,6 +24,7 @@ pub struct StatusBar {
     _volume: Controller<VolumeModel>,
     _network: Controller<NetworkModel>,
     _kube: Controller<KubeModel>,
+    _gcloud: Controller<GcloudModel>,
     monitor_name: String,
 }
 
@@ -41,7 +43,7 @@ impl StatusBar {
         window.set_monitor(Some(monitor));
 
         // Build widgets
-        let workspaces = WorkspacesWidget::new(hyprland_monitor_name);
+        let workspaces = WorkspacesWidget::new(hyprland_monitor_name, monitor);
         let active_window = ActiveWindowWidget::new();
 
         // Create relm4 components
@@ -50,11 +52,13 @@ impl StatusBar {
         let volume = VolumeModel::builder().launch(()).detach();
         let network = NetworkModel::builder().launch(()).detach();
         let kube = KubeModel::builder().launch(monitor.clone()).detach();
+        let gcloud = GcloudModel::builder().launch(monitor.clone()).detach();
 
         // Start box (left)
         let start_box = GtkBox::new(Orientation::Horizontal, 12);
         start_box.append(&workspaces.container);
         start_box.append(kube.widget());
+        start_box.append(gcloud.widget());
 
         // Center box
         let center_box = GtkBox::new(Orientation::Horizontal, 0);
@@ -84,6 +88,7 @@ impl StatusBar {
             _volume: volume,
             _network: network,
             _kube: kube,
+            _gcloud: gcloud,
             monitor_name: hyprland_monitor_name.to_string(),
         }
     }

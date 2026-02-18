@@ -95,10 +95,7 @@ pub fn spawn_listener(tx: Sender<HyprlandMsg>) {
         {
             let tx = tx.clone();
             listener.add_active_window_changed_handler(move |data| {
-                let title = data
-                    .as_ref()
-                    .map(|d| d.title.clone())
-                    .unwrap_or_default();
+                let title = data.as_ref().map(|d| d.title.clone()).unwrap_or_default();
                 let _ = tx.send(HyprlandMsg::ActiveWindowChanged { title });
             });
         }

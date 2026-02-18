@@ -51,6 +51,38 @@
     font-weight: bold;
 }
 
+/* Workspace preview canvas */
+#ws-preview-canvas {
+    background-color: @bg_darker;
+    border-radius: 4px;
+    margin-bottom: 4px;
+}
+
+/* Workspace preview popup */
+#ws-popup {
+    background-color: @bg_darker;
+    border: 1px solid @border_color;
+    border-radius: 8px;
+    padding: 6px 8px;
+}
+
+#ws-popup-item {
+    padding: 2px 6px;
+    font-size: 12px;
+    color: @fg;
+    border-radius: 4px;
+}
+
+#ws-popup-item:hover,
+#ws-popup-item.preview-highlight {
+    background-color: alpha(rgb(69, 71, 90), 0.6);
+}
+
+#ws-popup-item.dim {
+    color: @fg_dim;
+    font-style: italic;
+}
+
 /* Active window */
 #active-window label {
     color: @fg_dim;
@@ -110,6 +142,39 @@
 }
 
 #kube-menu-item.active {
+    color: @accent;
+    background-color: alpha(@accent, 0.1);
+}
+
+/* GCloud config */
+#gcloud-config {
+    padding: 0px 6px;
+    border-radius: 6px;
+    background-color: alpha(rgb(69, 71, 90), 0.4);
+}
+
+#gcloud-config label {
+    color: #a6adc8;
+}
+
+#gcloud-popup {
+    background-color: @bg_darker;
+    border: 1px solid @border_color;
+    border-radius: 8px;
+    padding: 4px;
+}
+
+#gcloud-menu-item {
+    padding: 4px 8px;
+    border-radius: 4px;
+    min-width: 120px;
+}
+
+#gcloud-menu-item:hover {
+    background-color: alpha(rgb(69, 71, 90), 0.6);
+}
+
+#gcloud-menu-item.active {
     color: @accent;
     background-color: alpha(@accent, 0.1);
 }

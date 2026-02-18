@@ -114,11 +114,7 @@ impl SimpleComponent for BatteryModel {
     }
 
     fn update_view(&self, widgets: &mut Self::Widgets, _sender: ComponentSender<Self>) {
-        widgets
-            .icon
-            .parent()
-            .unwrap()
-            .set_visible(self.visible);
+        widgets.icon.parent().unwrap().set_visible(self.visible);
         if self.visible {
             widgets.icon.set_icon_name(Some(&self.icon_name));
             widgets.label.set_label(&format!("{}%", self.pct));

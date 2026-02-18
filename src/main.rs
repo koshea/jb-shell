@@ -1,6 +1,7 @@
 mod bar;
 mod hyprland_listener;
 mod widgets;
+mod workspace_capture;
 
 use bar::StatusBar;
 use hyprland::data::Monitors;
@@ -22,24 +23,40 @@ fn main() {
     app.connect_activate(move |app| {
         // Load CSS
         let css_provider = CssProvider::new();
-        let css_path = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.join("../style.css")))
-            .unwrap_or_else(|| std::path::PathBuf::from("style.css"));
+        let config_dir = std::env::var("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+                    .join(".config")
+            });
 
         let css_candidates = [
-            css_path,
+            config_dir.join("jb-shell/style.css"),
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.join("style.css")))
+                .unwrap_or_default(),
             std::path::PathBuf::from("style.css"),
-            std::env::current_dir()
-                .unwrap_or_default()
-                .join("style.css"),
         ];
 
+        let mut css_loaded = false;
         for candidate in &css_candidates {
             if candidate.exists() {
-                css_provider.load_from_path(candidate.to_str().unwrap_or("style.css"));
+                eprintln!("jb-shell: loading CSS from {}", candidate.display());
+                css_provider.load_from_path(candidate.to_str().unwrap());
+                css_loaded = true;
                 break;
             }
+        }
+        if !css_loaded {
+            eprintln!(
+                "jb-shell: no style.css found, searched: {}",
+                css_candidates
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
 
         gtk4::style_context_add_provider_for_display(
@@ -52,9 +69,7 @@ fn main() {
         let display = gdk::Display::default().expect("Could not get default display");
         let gdk_monitors = display.monitors();
 
-        let hypr_monitors = Monitors::get()
-            .map(|m| m.to_vec())
-            .unwrap_or_default();
+        let hypr_monitors = Monitors::get().map(|m| m.to_vec()).unwrap_or_default();
 
         let bars: Rc<RefCell<Vec<StatusBar>>> = Rc::new(RefCell::new(Vec::new()));
 

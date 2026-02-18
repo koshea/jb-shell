@@ -15,7 +15,10 @@ pub struct NetworkModel {
 
 #[derive(Debug)]
 pub enum NetworkInput {
-    PollResult { icon_name: String, label_text: String },
+    PollResult {
+        icon_name: String,
+        label_text: String,
+    },
 }
 
 pub struct NetworkWidgets {
