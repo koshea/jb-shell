@@ -5,6 +5,7 @@ pub mod clock;
 pub mod gcloud_config;
 pub mod kube_context;
 pub mod network;
+pub mod notification_center;
 pub mod notifications;
 pub mod switcher;
 pub mod volume;

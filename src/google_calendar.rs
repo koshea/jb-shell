@@ -1,5 +1,5 @@
 use chrono::{DateTime, Local, TimeZone, Utc};
-use google_calendar3::{yup_oauth2 as oauth2, CalendarHub, hyper_rustls, hyper_util};
+use google_calendar3::{hyper_rustls, hyper_util, yup_oauth2 as oauth2, CalendarHub};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -54,8 +54,7 @@ fn config_dir() -> PathBuf {
     std::env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
-                .join(".config")
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
         })
         .join("jb-shell")
 }
@@ -64,8 +63,7 @@ fn data_dir() -> PathBuf {
     std::env::var("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
-                .join(".local/share")
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".local/share")
         })
         .join("jb-shell")
 }
@@ -90,10 +88,7 @@ async fn calendar_thread_main(
     let cred_path = config_dir().join("google-credentials.json");
 
     if !cred_path.exists() {
-        eprintln!(
-            "jb-shell: no Google credentials at {}",
-            cred_path.display()
-        );
+        eprintln!("jb-shell: no Google credentials at {}", cred_path.display());
         send(CalendarResult::NoCredentials);
         loop {
             std::thread::sleep(std::time::Duration::from_secs(3600));
@@ -141,10 +136,8 @@ async fn calendar_thread_main(
         .https_or_http()
         .enable_http1()
         .build();
-    let client = hyper_util::client::legacy::Client::builder(
-        hyper_util::rt::TokioExecutor::new(),
-    )
-    .build(connector);
+    let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+        .build(connector);
     let hub = CalendarHub::new(client, auth.clone());
 
     let has_tokens = token_path.exists()
@@ -181,9 +174,7 @@ async fn calendar_thread_main(
                 Err(e) => {
                     let err_str = e.to_string();
                     eprintln!("jb-shell: calendar fetch error: {err_str}");
-                    if err_str.contains("401")
-                        || err_str.contains("nauthorized")
-                    {
+                    if err_str.contains("401") || err_str.contains("nauthorized") {
                         authenticated = false;
                         send(CalendarResult::AuthRevoked);
                     }
@@ -200,10 +191,7 @@ async fn fetch_events(
     hub: &CalendarHub<HubConnector>,
 ) -> Result<Vec<CalendarEvent>, Box<dyn std::error::Error + Send + Sync>> {
     let now = Local::now();
-    let today_start = now
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .unwrap();
+    let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
     let tomorrow_start = today_start + chrono::TimeDelta::try_days(1).unwrap();
 
     let today_start_utc: DateTime<Utc> = Local
@@ -230,8 +218,7 @@ async fn fetch_events(
         // Filter declined events
         if let Some(attendees) = &event.attendees {
             let declined = attendees.iter().any(|a| {
-                a.self_.unwrap_or(false)
-                    && a.response_status.as_deref() == Some("declined")
+                a.self_.unwrap_or(false) && a.response_status.as_deref() == Some("declined")
             });
             if declined {
                 continue;

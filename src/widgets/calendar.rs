@@ -1,7 +1,7 @@
 use crate::google_calendar::{self, CalendarEvent, CalendarResult, CalendarThreadMsg};
 use crate::widgets::notifications::{
-    ActionCallback, NotificationAction, NotificationInput, NotificationKind,
-    NotificationRequest, NotificationSource, format_countdown, hash_event_id,
+    format_countdown, hash_event_id, ActionCallback, NotificationAction, NotificationInput,
+    NotificationKind, NotificationRequest, NotificationSource,
 };
 use chrono::Local;
 use gdk4::Monitor;
@@ -12,8 +12,8 @@ use relm4::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
-use tokio::sync::mpsc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 pub struct CalendarInit {
     pub monitor: Monitor,
@@ -125,17 +125,13 @@ impl Component for CalendarModel {
 
         // Spawn calendar thread
         let input_sender = sender.input_sender().clone();
-        let thread_tx = google_calendar::spawn_calendar_thread(move |result| {
-            match result {
-                CalendarResult::EventsUpdated(e) => {
-                    input_sender.emit(CalendarInput::EventsUpdated(e))
-                }
-                CalendarResult::AuthComplete => input_sender.emit(CalendarInput::AuthComplete),
-                CalendarResult::AuthFailed(s) => input_sender.emit(CalendarInput::AuthFailed(s)),
-                CalendarResult::AuthRevoked => input_sender.emit(CalendarInput::AuthRevoked),
-                CalendarResult::NeedsAuth => input_sender.emit(CalendarInput::NeedsAuth),
-                CalendarResult::NoCredentials => input_sender.emit(CalendarInput::NoCredentials),
-            }
+        let thread_tx = google_calendar::spawn_calendar_thread(move |result| match result {
+            CalendarResult::EventsUpdated(e) => input_sender.emit(CalendarInput::EventsUpdated(e)),
+            CalendarResult::AuthComplete => input_sender.emit(CalendarInput::AuthComplete),
+            CalendarResult::AuthFailed(s) => input_sender.emit(CalendarInput::AuthFailed(s)),
+            CalendarResult::AuthRevoked => input_sender.emit(CalendarInput::AuthRevoked),
+            CalendarResult::NeedsAuth => input_sender.emit(CalendarInput::NeedsAuth),
+            CalendarResult::NoCredentials => input_sender.emit(CalendarInput::NoCredentials),
         });
 
         // 1-second notification check timer
@@ -180,11 +176,10 @@ impl Component for CalendarModel {
                 cancel_timer(&widgets.close_timer);
                 let hide_sender = sender.input_sender().clone();
                 let timer_ref = widgets.close_timer.clone();
-                let id =
-                    glib::timeout_add_local_once(Duration::from_millis(500), move || {
-                        hide_sender.emit(CalendarInput::HidePopup);
-                        *timer_ref.borrow_mut() = None;
-                    });
+                let id = glib::timeout_add_local_once(Duration::from_millis(500), move || {
+                    hide_sender.emit(CalendarInput::HidePopup);
+                    *timer_ref.borrow_mut() = None;
+                });
                 *widgets.close_timer.borrow_mut() = Some(id);
                 return;
             }
@@ -205,12 +200,10 @@ impl Component for CalendarModel {
                     .collect();
                 let new_times: std::collections::HashMap<&str, _> =
                     events.iter().map(|e| (e.id.as_str(), e.start)).collect();
-                self.notified_5min.retain(|id| {
-                    new_times.get(id.as_str()) == old_times.get(id.as_str())
-                });
-                self.notified_1min.retain(|id| {
-                    new_times.get(id.as_str()) == old_times.get(id.as_str())
-                });
+                self.notified_5min
+                    .retain(|id| new_times.get(id.as_str()) == old_times.get(id.as_str()));
+                self.notified_1min
+                    .retain(|id| new_times.get(id.as_str()) == old_times.get(id.as_str()));
                 self.events = events;
                 self.authenticated = true;
             }
@@ -412,7 +405,8 @@ impl CalendarModel {
             if secs_until <= 310 && secs_until > 0 && secs_until % 30 == 0 {
                 eprintln!(
                     "jb-shell: notif check: {} in {}s, 5min_notified={}, 1min_notified={}",
-                    event.title, secs_until,
+                    event.title,
+                    secs_until,
                     self.notified_5min.contains(&event.id),
                     self.notified_1min.contains(&event.id),
                 );
@@ -421,9 +415,8 @@ impl CalendarModel {
             if secs_until <= 300 && !self.notified_5min.contains(&event.id) {
                 eprintln!("jb-shell: firing 5min notification for {}", event.title);
                 self.notified_5min.insert(event.id.clone());
-                self.notif_sender.emit(NotificationInput::Show(
-                    self.build_5min_notification(event),
-                ));
+                self.notif_sender
+                    .emit(NotificationInput::Show(self.build_5min_notification(event)));
             }
             if secs_until <= 60 && !self.notified_1min.contains(&event.id) {
                 eprintln!("jb-shell: firing 1min notification for {}", event.title);
@@ -625,8 +618,7 @@ fn is_meeting_focused() -> bool {
 
     let browsers = ["firefox", "google-chrome", "chromium", "brave"];
     let meeting_urls = ["meet.google.com", "zoom.us", "teams.microsoft.com"];
-    if browsers.iter().any(|b| class.contains(b))
-        && meeting_urls.iter().any(|k| title.contains(k))
+    if browsers.iter().any(|b| class.contains(b)) && meeting_urls.iter().any(|k| title.contains(k))
     {
         return true;
     }

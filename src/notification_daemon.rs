@@ -15,6 +15,9 @@ use zbus::zvariant;
 pub enum DaemonCommand {
     NotificationClosed { id: u32, reason: u32 },
     ActionInvoked { id: u32, action_key: String },
+    MarkRead { id: u32 },
+    MarkAllRead,
+    ClearAll,
 }
 
 struct NotificationServer {
@@ -122,8 +125,15 @@ impl NotificationServer {
             }
         }
 
-        let request =
-            fd_notification_to_request(id, summary, body, &actions, urgency, expire_timeout);
+        let request = fd_notification_to_request(
+            id,
+            app_name,
+            summary,
+            body,
+            &actions,
+            urgency,
+            expire_timeout,
+        );
         self.notif_sender.emit(NotificationInput::Show(request));
 
         id
@@ -131,8 +141,7 @@ impl NotificationServer {
 
     fn close_notification(&self, id: u32) {
         let notif_id = id as NotificationId;
-        self.notif_sender
-            .emit(NotificationInput::Dismiss(notif_id));
+        self.notif_sender.emit(NotificationInput::Dismiss(notif_id));
 
         if let Ok(db) = self.db.lock() {
             let _ = db.execute(
@@ -182,17 +191,19 @@ fn serialize_actions_json(actions: &[String]) -> String {
 
 fn fd_notification_to_request(
     fd_id: u32,
+    app_name: &str,
     summary: &str,
     body: &str,
     actions: &[String],
     urgency: u8,
     expire_timeout: i32,
 ) -> NotificationRequest {
+    let has_actions = actions.len() >= 2;
     let timeout_ms = match expire_timeout {
-        -1 => Some(5000),
+        -1 => Some(if has_actions { 15000 } else { 5000 }),
         0 => None,
         ms if ms > 0 => Some(ms as u32),
-        _ => Some(5000),
+        _ => Some(if has_actions { 15000 } else { 5000 }),
     };
 
     let notif_id = fd_id as NotificationId;
@@ -203,13 +214,22 @@ fn fd_notification_to_request(
             if chunk.len() == 2 {
                 let key = &chunk[0];
                 let label = &chunk[1];
+                let display_label = if label.is_empty() {
+                    if key == "default" {
+                        "Open".to_string()
+                    } else {
+                        key.clone()
+                    }
+                } else {
+                    label.clone()
+                };
                 let css_class = if key == "default" {
                     "notif-default-action"
                 } else {
                     "notif-action"
                 };
                 Some(NotificationAction {
-                    label: label.clone(),
+                    label: display_label,
                     css_class: css_class.to_string(),
                     callback: ActionCallback::FdAction {
                         fd_id,
@@ -253,11 +273,14 @@ fn fd_notification_to_request(
         css_box_name: Some("fd-notification".to_string()),
         css_card_class: urgency_class,
         timeout_ms,
-        source: NotificationSource::Freedesktop { fd_id },
+        source: NotificationSource::Freedesktop {
+            fd_id,
+            app_name: app_name.to_string(),
+        },
     }
 }
 
-fn open_db() -> Result<DbConnection, rusqlite::Error> {
+pub fn db_path() -> std::path::PathBuf {
     let data_dir = std::env::var("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
@@ -268,8 +291,11 @@ fn open_db() -> Result<DbConnection, rusqlite::Error> {
 
     std::fs::create_dir_all(&data_dir).ok();
 
-    let db_path = data_dir.join("notifications.db");
-    let db = DbConnection::open(db_path)?;
+    data_dir.join("notifications.db")
+}
+
+fn open_db() -> Result<DbConnection, rusqlite::Error> {
+    let db = DbConnection::open(db_path())?;
 
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS notifications (
@@ -292,6 +318,10 @@ fn open_db() -> Result<DbConnection, rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_notifications_app ON notifications(app_name);
         CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at);",
     )?;
+
+    // Migration: add read column (silently fails if already exists)
+    let _ =
+        db.execute_batch("ALTER TABLE notifications ADD COLUMN read INTEGER NOT NULL DEFAULT 0;");
 
     Ok(db)
 }
@@ -355,16 +385,34 @@ pub fn spawn_notification_daemon(
         loop {
             match cmd_rx.recv() {
                 Ok(DaemonCommand::NotificationClosed { id, reason }) => {
-                    // Update DB
+                    // Update DB with close info + read status
                     {
                         let iface = iface_ref.get();
                         let db = iface.db.lock();
                         if let Ok(db) = db {
-                            let _ = db.execute(
-                                "UPDATE notifications SET closed_at = datetime('now'), \
-                                 close_reason = ?1 WHERE id = ?2",
-                                rusqlite::params![reason, id],
-                            );
+                            if reason == 2 || reason == 3 {
+                                // User dismissed/acted or caller closed — mark read
+                                let _ = db.execute(
+                                    "UPDATE notifications SET closed_at = datetime('now'), \
+                                     close_reason = ?1, read = 1 WHERE id = ?2",
+                                    rusqlite::params![reason, id],
+                                );
+                            } else if reason == 1 {
+                                // Expired — unread only if had real actions
+                                let _ = db.execute(
+                                    "UPDATE notifications SET closed_at = datetime('now'), \
+                                     close_reason = ?1, \
+                                     read = CASE WHEN actions = '[]' OR actions IS NULL THEN 1 ELSE 0 END \
+                                     WHERE id = ?2",
+                                    rusqlite::params![reason, id],
+                                );
+                            } else {
+                                let _ = db.execute(
+                                    "UPDATE notifications SET closed_at = datetime('now'), \
+                                     close_reason = ?1 WHERE id = ?2",
+                                    rusqlite::params![reason, id],
+                                );
+                            }
                         }
                     }
                     // Emit D-Bus signal via raw connection API
@@ -384,6 +432,38 @@ pub fn spawn_notification_daemon(
                         "ActionInvoked",
                         &(id, action_key.as_str()),
                     );
+                }
+                Ok(DaemonCommand::MarkRead { id }) => {
+                    let iface = iface_ref.get();
+                    let db = iface.db.lock();
+                    if let Ok(db) = db {
+                        let _ = db.execute(
+                            "UPDATE notifications SET read = 1 WHERE id = ?1",
+                            rusqlite::params![id],
+                        );
+                    }
+                }
+                Ok(DaemonCommand::MarkAllRead) => {
+                    let iface = iface_ref.get();
+                    let db = iface.db.lock();
+                    if let Ok(db) = db {
+                        let _ = db.execute(
+                            "UPDATE notifications SET read = 1 \
+                             WHERE date(created_at) = date('now') AND read = 0",
+                            [],
+                        );
+                    }
+                }
+                Ok(DaemonCommand::ClearAll) => {
+                    let iface = iface_ref.get();
+                    let db = iface.db.lock();
+                    if let Ok(db) = db {
+                        let _ = db.execute(
+                            "UPDATE notifications SET read = 1 \
+                             WHERE date(created_at) = date('now')",
+                            [],
+                        );
+                    }
                 }
                 Err(_) => break,
             }

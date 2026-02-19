@@ -19,7 +19,7 @@ pub enum NotificationKind {
 #[derive(Clone, Debug)]
 pub enum NotificationSource {
     Internal,
-    Freedesktop { fd_id: u32 },
+    Freedesktop { fd_id: u32, app_name: String },
 }
 
 #[derive(Clone, Debug)]
@@ -60,11 +60,16 @@ pub enum NotificationInput {
     Tick,
     ActionTriggered(NotificationId, ActionCallback),
     SetDaemonChannel(std::sync::mpsc::Sender<crate::notification_daemon::DaemonCommand>),
+    SetCenterOpen(bool),
+    SetCenterSender(relm4::Sender<crate::widgets::notification_center::NotificationCenterInput>),
 }
 
 pub struct NotificationModel {
     active: Vec<ActiveNotification>,
     daemon_tx: Option<std::sync::mpsc::Sender<crate::notification_daemon::DaemonCommand>>,
+    center_open: bool,
+    center_sender:
+        Option<relm4::Sender<crate::widgets::notification_center::NotificationCenterInput>>,
 }
 
 struct ActiveNotification {
@@ -104,6 +109,8 @@ impl Component for NotificationModel {
         let model = NotificationModel {
             active: Vec::new(),
             daemon_tx: None,
+            center_open: false,
+            center_sender: None,
         };
         let widgets = NotificationWidgets { monitor };
         ComponentParts { model, widgets }
@@ -118,6 +125,18 @@ impl Component for NotificationModel {
     ) {
         match message {
             NotificationInput::Show(request) => {
+                // Suppress FD toast when center is open; forward to center instead
+                if self.center_open {
+                    if let NotificationSource::Freedesktop { fd_id, .. } = &request.source {
+                        if let Some(center_tx) = &self.center_sender {
+                            center_tx.emit(
+                                crate::widgets::notification_center::NotificationCenterInput::NewNotification(*fd_id),
+                            );
+                        }
+                        return;
+                    }
+                }
+
                 // Dismiss existing notification with same ID
                 self.dismiss_by_id_with_reason(request.id, 0);
 
@@ -172,17 +191,21 @@ impl Component for NotificationModel {
                     ActionCallback::OpenUrl(url) => {
                         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
                     }
-                    ActionCallback::FdAction {
-                        fd_id,
-                        action_key,
-                    } => {
+                    ActionCallback::FdAction { fd_id, action_key } => {
+                        // Focus the originating app's window
+                        if let Some(notif) = self.active.iter().find(|n| n.request.id == id) {
+                            if let NotificationSource::Freedesktop { app_name, .. } =
+                                &notif.request.source
+                            {
+                                focus_app_window(app_name);
+                            }
+                        }
                         if let Some(tx) = &self.daemon_tx {
-                            let _ = tx.send(
-                                crate::notification_daemon::DaemonCommand::ActionInvoked {
+                            let _ =
+                                tx.send(crate::notification_daemon::DaemonCommand::ActionInvoked {
                                     id: *fd_id,
                                     action_key: action_key.clone(),
-                                },
-                            );
+                                });
                         }
                     }
                 }
@@ -191,6 +214,12 @@ impl Component for NotificationModel {
             }
             NotificationInput::SetDaemonChannel(tx) => {
                 self.daemon_tx = Some(tx);
+            }
+            NotificationInput::SetCenterOpen(open) => {
+                self.center_open = open;
+            }
+            NotificationInput::SetCenterSender(sender) => {
+                self.center_sender = Some(sender);
             }
         }
     }
@@ -204,7 +233,7 @@ impl NotificationModel {
                 let notif = self.active.remove(i);
                 notif.window.set_visible(false);
                 if reason > 0 {
-                    if let NotificationSource::Freedesktop { fd_id } = notif.request.source {
+                    if let NotificationSource::Freedesktop { fd_id, .. } = notif.request.source {
                         if let Some(tx) = &self.daemon_tx {
                             let _ = tx.send(
                                 crate::notification_daemon::DaemonCommand::NotificationClosed {
@@ -214,6 +243,12 @@ impl NotificationModel {
                             );
                         }
                     }
+                }
+                // Notify center to refresh count
+                if let Some(center_tx) = &self.center_sender {
+                    center_tx.emit(
+                        crate::widgets::notification_center::NotificationCenterInput::Refresh,
+                    );
                 }
             } else {
                 i += 1;
@@ -288,11 +323,17 @@ fn build_notification_content(
 
     let title_label = Label::new(Some(&request.title));
     title_label.add_css_class("notif-title-label");
+    title_label.set_max_width_chars(50);
+    title_label.set_wrap(true);
+    title_label.set_xalign(0.0);
     container.append(&title_label);
 
     if let Some(body) = &request.body {
         let body_label = Label::new(Some(body));
         body_label.add_css_class("notif-event");
+        body_label.set_max_width_chars(50);
+        body_label.set_wrap(true);
+        body_label.set_xalign(0.0);
         container.append(&body_label);
     }
 
@@ -377,4 +418,28 @@ pub fn hash_event_id(event_id: &str, suffix: &str) -> NotificationId {
     event_id.hash(&mut hasher);
     suffix.hash(&mut hasher);
     hasher.finish()
+}
+
+fn focus_app_window(app_name: &str) {
+    use hyprland::data::Clients;
+    use hyprland::dispatch::{Dispatch, DispatchType, WindowIdentifier};
+    use hyprland::shared::{HyprData, HyprDataVec};
+
+    let app_lower = app_name.to_lowercase();
+    if app_lower.is_empty() {
+        return;
+    }
+
+    if let Ok(clients) = Clients::get() {
+        // Find the most recently focused window whose class matches the app name
+        if let Some(client) = clients
+            .to_vec()
+            .into_iter()
+            .find(|c| c.class.to_lowercase() == app_lower)
+        {
+            let _ = Dispatch::call(DispatchType::FocusWindow(WindowIdentifier::Address(
+                client.address.clone(),
+            )));
+        }
+    }
 }

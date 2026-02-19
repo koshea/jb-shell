@@ -12,6 +12,7 @@ use crate::widgets::clock::ClockModel;
 use crate::widgets::gcloud_config::GcloudModel;
 use crate::widgets::kube_context::KubeModel;
 use crate::widgets::network::NetworkModel;
+use crate::widgets::notification_center::{NotificationCenterInit, NotificationCenterModel};
 use crate::widgets::notifications::NotificationModel;
 use crate::widgets::volume::VolumeModel;
 use crate::widgets::workspaces::WorkspacesWidget;
@@ -29,6 +30,7 @@ pub struct StatusBar {
     _kube: Controller<KubeModel>,
     _gcloud: Controller<GcloudModel>,
     _notifications: Controller<NotificationModel>,
+    _notification_center: Controller<NotificationCenterModel>,
     _calendar: Controller<CalendarModel>,
     monitor_name: String,
 }
@@ -58,8 +60,25 @@ impl StatusBar {
         let network = NetworkModel::builder().launch(()).detach();
         let kube = KubeModel::builder().launch(monitor.clone()).detach();
         let gcloud = GcloudModel::builder().launch(monitor.clone()).detach();
-        let notifications = NotificationModel::builder().launch(monitor.clone()).detach();
+        let notifications = NotificationModel::builder()
+            .launch(monitor.clone())
+            .detach();
         let notif_sender = notifications.sender().clone();
+
+        let notification_center = NotificationCenterModel::builder()
+            .launch(NotificationCenterInit {
+                monitor: monitor.clone(),
+                notif_sender: notif_sender.clone(),
+            })
+            .detach();
+
+        // Wire center sender into notification model for suppression
+        notifications.sender().emit(
+            crate::widgets::notifications::NotificationInput::SetCenterSender(
+                notification_center.sender().clone(),
+            ),
+        );
+
         let calendar = CalendarModel::builder()
             .launch(CalendarInit {
                 monitor: monitor.clone(),
@@ -79,6 +98,7 @@ impl StatusBar {
 
         // End box (right)
         let end_box = GtkBox::new(Orientation::Horizontal, 8);
+        end_box.append(notification_center.widget());
         end_box.append(calendar.widget());
         end_box.append(volume.widget());
         end_box.append(network.widget());
@@ -105,6 +125,7 @@ impl StatusBar {
             _kube: kube,
             _gcloud: gcloud,
             _notifications: notifications,
+            _notification_center: notification_center,
             _calendar: calendar,
             monitor_name: hyprland_monitor_name.to_string(),
         }
@@ -155,8 +176,16 @@ impl StatusBar {
         }
     }
 
-    pub fn notification_sender(&self) -> &relm4::Sender<crate::widgets::notifications::NotificationInput> {
+    pub fn notification_sender(
+        &self,
+    ) -> &relm4::Sender<crate::widgets::notifications::NotificationInput> {
         self._notifications.sender()
+    }
+
+    pub fn notification_center_sender(
+        &self,
+    ) -> &relm4::Sender<crate::widgets::notification_center::NotificationCenterInput> {
+        self._notification_center.sender()
     }
 
     pub fn destroy(&self) {
