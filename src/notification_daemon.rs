@@ -2,6 +2,7 @@ use crate::widgets::notifications::{
     ActionCallback, NotificationAction, NotificationId, NotificationInput, NotificationKind,
     NotificationRequest, NotificationSource,
 };
+use chrono::TimeZone;
 use rusqlite::Connection as DbConnection;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -280,6 +281,20 @@ fn fd_notification_to_request(
     }
 }
 
+/// Returns today's local midnight as a UTC datetime string (for SQL `created_at >= ?`).
+/// This ensures timezone-correct "today" filtering since `created_at` is stored in UTC.
+pub fn today_start_utc() -> String {
+    let today_local = chrono::Local::now().date_naive();
+    let midnight_local = today_local
+        .and_hms_opt(0, 0, 0)
+        .expect("valid midnight time");
+    let midnight_utc = chrono::Local
+        .from_local_datetime(&midnight_local)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    midnight_utc.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
 pub fn db_path() -> std::path::PathBuf {
     let data_dir = std::env::var("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
@@ -447,10 +462,11 @@ pub fn spawn_notification_daemon(
                     let iface = iface_ref.get();
                     let db = iface.db.lock();
                     if let Ok(db) = db {
+                        let today = today_start_utc();
                         let _ = db.execute(
                             "UPDATE notifications SET read = 1 \
-                             WHERE date(created_at) = date('now') AND read = 0",
-                            [],
+                             WHERE created_at >= ?1 AND read = 0",
+                            rusqlite::params![today],
                         );
                     }
                 }
@@ -458,10 +474,11 @@ pub fn spawn_notification_daemon(
                     let iface = iface_ref.get();
                     let db = iface.db.lock();
                     if let Ok(db) = db {
+                        let today = today_start_utc();
                         let _ = db.execute(
                             "UPDATE notifications SET read = 1 \
-                             WHERE date(created_at) = date('now')",
-                            [],
+                             WHERE created_at >= ?1",
+                            rusqlite::params![today],
                         );
                     }
                 }

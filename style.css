@@ -448,3 +448,35 @@
     font-size: 11px;
     color: @fg_dim;
 }
+
+/* Notification center view toggle */
+#notif-center-view-toggle {
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: @fg_dim;
+}
+
+#notif-center-view-toggle:hover {
+    background-color: alpha(rgb(69, 71, 90), 0.6);
+    color: @fg;
+}
+
+/* AI summary text */
+#notif-summary-text {
+    padding: 6px 8px;
+    font-size: 12px;
+    color: @fg;
+}
+
+#notif-summary-text.summary-loading {
+    color: @fg_dim;
+    font-style: italic;
+}
+
+#notif-summary-text.summary-error {
+    color: #f38ba8;
+}
+
+#notif-summary-text.summary-setup {
+    color: @fg_dim;
+}

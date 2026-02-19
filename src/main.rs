@@ -2,6 +2,7 @@ mod bar;
 mod google_calendar;
 mod hyprland_listener;
 mod notification_daemon;
+mod summary_thread;
 mod widgets;
 mod workspace_capture;
 
@@ -40,10 +41,15 @@ fn match_hyprland_monitor(
 fn main() {
     let app = Application::builder().application_id(APP_ID).build();
 
+    app.connect_shutdown(|_| {
+        eprintln!("jb-shell: [lifecycle] Application::shutdown fired");
+    });
+
     app.connect_activate(move |app| {
         // Prevent app from quitting when all windows are destroyed (e.g. DPMS monitor off).
         // The guard must be kept alive for the duration of the app.
         let _hold = app.hold();
+        eprintln!("jb-shell: [lifecycle] activate — hold guard acquired");
         // Load CSS
         let css_provider = CssProvider::new();
         let config_dir = std::env::var("XDG_CONFIG_HOME")
@@ -93,6 +99,15 @@ fn main() {
         let gdk_monitors = display.monitors();
 
         let hypr_monitors = Monitors::get().map(|m| m.to_vec()).unwrap_or_default();
+        eprintln!(
+            "jb-shell: [lifecycle] startup: gdk_monitors={} hypr_monitors=[{}]",
+            gdk_monitors.n_items(),
+            hypr_monitors
+                .iter()
+                .map(|m| format!("{}@{}x{}", m.name, m.x, m.y))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
 
         let bars: Rc<RefCell<Vec<StatusBar>>> = Rc::new(RefCell::new(Vec::new()));
 
@@ -135,23 +150,54 @@ fn main() {
         let bars_for_signal = bars.clone();
         let app_for_signal = app.clone();
         gdk_monitors.connect_items_changed(move |list, position, removed, added| {
-            eprintln!("jb-shell: monitors changed: pos={position} removed={removed} added={added}");
+            let total_gdk = list.n_items();
+            eprintln!(
+                "jb-shell: [monitor] items_changed: pos={position} removed={removed} added={added} total_gdk_monitors={total_gdk}"
+            );
             let mut bars = bars_for_signal.borrow_mut();
+            eprintln!(
+                "jb-shell: [monitor] bars before processing: {} — [{}]",
+                bars.len(),
+                bars.iter()
+                    .map(|b| b.monitor_name().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
 
             // Remove bars for monitors that no longer exist
             if removed > 0 {
                 let valid_monitors: Vec<gdk4::Monitor> = (0..list.n_items())
-                    .filter_map(|i| list.item(i)?.downcast::<gdk4::Monitor>().ok())
+                    .filter_map(|i| {
+                        let mon = list.item(i)?.downcast::<gdk4::Monitor>().ok()?;
+                        let geo = mon.geometry();
+                        let valid = mon.is_valid();
+                        eprintln!(
+                            "jb-shell: [monitor]   gdk monitor {i}: valid={valid} geo={}x{}+{}+{}",
+                            geo.width(),
+                            geo.height(),
+                            geo.x(),
+                            geo.y()
+                        );
+                        Some(mon)
+                    })
                     .collect();
 
                 bars.retain(|bar| {
                     let still_valid = valid_monitors.iter().any(|vm| vm == &bar.monitor);
+                    let mon_valid = bar.monitor.is_valid();
                     if !still_valid {
                         eprintln!(
-                            "jb-shell: removing bar for disconnected monitor: {}",
-                            bar.monitor_name()
+                            "jb-shell: [monitor] removing bar for disconnected monitor: {} (monitor.is_valid={})",
+                            bar.monitor_name(),
+                            mon_valid,
                         );
                         bar.destroy();
+                    } else {
+                        eprintln!(
+                            "jb-shell: [monitor] keeping bar: {} (monitor.is_valid={})",
+                            bar.monitor_name(),
+                            mon_valid,
+                        );
                     }
                     still_valid
                 });
@@ -160,13 +206,21 @@ fn main() {
             // Add bars for new monitors
             if added > 0 {
                 let hypr_monitors = Monitors::get().map(|m| m.to_vec()).unwrap_or_default();
+                eprintln!(
+                    "jb-shell: [monitor] hyprland monitors: [{}]",
+                    hypr_monitors
+                        .iter()
+                        .map(|m| format!("{}@{}x{}", m.name, m.x, m.y))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
                 for i in position..(position + added) {
                     if let Some(gdk_mon) = list
                         .item(i)
                         .and_then(|o| o.downcast::<gdk4::Monitor>().ok())
                     {
                         let hypr_name = match_hyprland_monitor(&gdk_mon, &hypr_monitors, i);
-                        eprintln!("jb-shell: adding bar for new monitor: {hypr_name}");
+                        eprintln!("jb-shell: [monitor] adding bar for new monitor: {hypr_name}");
                         let bar = StatusBar::new(&gdk_mon, &hypr_name);
                         bar.window.set_application(Some(&app_for_signal));
                         bar.window.present();
@@ -174,6 +228,20 @@ fn main() {
                     }
                 }
             }
+
+            eprintln!(
+                "jb-shell: [monitor] bars after processing: {} — [{}]",
+                bars.len(),
+                bars.iter()
+                    .map(|b| b.monitor_name().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            eprintln!(
+                "jb-shell: [monitor] app is_registered={} windows={}",
+                app_for_signal.is_registered(),
+                app_for_signal.windows().len()
+            );
         });
 
         // Set up Hyprland event channel using std::sync::mpsc
@@ -194,5 +262,6 @@ fn main() {
         });
     });
 
-    app.run_with_args::<&str>(&[]);
+    let exit_code = app.run_with_args::<&str>(&[]);
+    eprintln!("jb-shell: [lifecycle] app.run_with_args returned, exit_code={exit_code:?}");
 }

@@ -113,6 +113,21 @@ impl StatusBar {
 
         window.set_child(Some(&center));
 
+        // Debug: log if GTK asks to close this window
+        let mon_name_for_signal = hyprland_monitor_name.to_string();
+        window.connect_close_request(move |_| {
+            eprintln!(
+                "jb-shell: [lifecycle] close_request on bar window for monitor: {mon_name_for_signal}"
+            );
+            gtk4::glib::Propagation::Proceed
+        });
+
+        // Debug: log when the window is actually destroyed
+        let mon_name_for_destroy = hyprland_monitor_name.to_string();
+        window.connect_destroy(move |_| {
+            eprintln!("jb-shell: [lifecycle] window destroy for monitor: {mon_name_for_destroy}");
+        });
+
         Self {
             window,
             monitor: monitor.clone(),
@@ -189,6 +204,10 @@ impl StatusBar {
     }
 
     pub fn destroy(&self) {
+        eprintln!(
+            "jb-shell: [lifecycle] StatusBar::destroy called for monitor: {}",
+            self.monitor_name
+        );
         self.window.set_visible(false);
         self.window.close();
     }

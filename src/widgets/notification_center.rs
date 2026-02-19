@@ -1,4 +1,5 @@
 use crate::notification_daemon::DaemonCommand;
+use crate::summary_thread::{SummaryResult, SummaryThreadMsg};
 use crate::widgets::notifications::NotificationInput;
 use gdk4::Monitor;
 use gtk4::prelude::*;
@@ -18,6 +19,12 @@ pub struct NotificationCenterInit {
     pub notif_sender: relm4::Sender<NotificationInput>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ViewMode {
+    List,
+    Summary,
+}
+
 pub struct NotificationCenterModel {
     unread_count: u32,
     popup_visible: bool,
@@ -25,6 +32,11 @@ pub struct NotificationCenterModel {
     daemon_tx: Option<mpsc::Sender<DaemonCommand>>,
     notif_sender: relm4::Sender<NotificationInput>,
     db: Option<DbConnection>,
+    view_mode: ViewMode,
+    summary_text: Option<String>,
+    summary_loading: bool,
+    summary_error: Option<String>,
+    has_api_key: bool,
 }
 
 struct NotifItem {
@@ -48,6 +60,9 @@ pub enum NotificationCenterInput {
     MarkAllRead,
     ClearAll,
     MarkItemRead(u32),
+    ToggleViewMode,
+    RefreshSummary,
+    SummaryResult(SummaryResult),
 }
 
 pub struct NotificationCenterWidgets {
@@ -56,6 +71,7 @@ pub struct NotificationCenterWidgets {
     popup: Window,
     popup_box: GtkBox,
     close_timer: Rc<RefCell<Option<glib::SourceId>>>,
+    summary_thread_tx: tokio::sync::mpsc::Sender<SummaryThreadMsg>,
 }
 
 impl Component for NotificationCenterModel {
@@ -139,6 +155,12 @@ impl Component for NotificationCenterModel {
             glib::ControlFlow::Continue
         });
 
+        // Spawn summary thread
+        let summary_sender = sender.input_sender().clone();
+        let summary_thread_tx = crate::summary_thread::spawn_summary_thread(move |result| {
+            summary_sender.emit(NotificationCenterInput::SummaryResult(result));
+        });
+
         // Initial count query
         let mut model = NotificationCenterModel {
             unread_count: 0,
@@ -147,6 +169,11 @@ impl Component for NotificationCenterModel {
             daemon_tx: None,
             notif_sender,
             db,
+            view_mode: ViewMode::List,
+            summary_text: None,
+            summary_loading: false,
+            summary_error: None,
+            has_api_key: true, // assume true until thread tells us otherwise
         };
         model.refresh_count();
 
@@ -156,6 +183,7 @@ impl Component for NotificationCenterModel {
             popup,
             popup_box,
             close_timer: Rc::new(RefCell::new(None)),
+            summary_thread_tx,
         };
 
         ComponentParts { model, widgets }
@@ -216,7 +244,50 @@ impl Component for NotificationCenterModel {
                 if self.popup_visible {
                     self.refresh_items();
                 }
+                let _ = widgets
+                    .summary_thread_tx
+                    .try_send(SummaryThreadMsg::NewNotification(_fd_id));
             }
+            NotificationCenterInput::ToggleViewMode => {
+                self.view_mode = match self.view_mode {
+                    ViewMode::List => ViewMode::Summary,
+                    ViewMode::Summary => ViewMode::List,
+                };
+                // Auto-trigger refresh when switching to summary with no text yet
+                if self.view_mode == ViewMode::Summary
+                    && self.summary_text.is_none()
+                    && self.has_api_key
+                    && !self.summary_loading
+                {
+                    let _ = widgets
+                        .summary_thread_tx
+                        .try_send(SummaryThreadMsg::ManualRefresh);
+                }
+            }
+            NotificationCenterInput::RefreshSummary => {
+                let _ = widgets
+                    .summary_thread_tx
+                    .try_send(SummaryThreadMsg::ManualRefresh);
+            }
+            NotificationCenterInput::SummaryResult(result) => match result {
+                SummaryResult::Updated(text) => {
+                    self.summary_text = Some(text);
+                    self.summary_loading = false;
+                    self.summary_error = None;
+                }
+                SummaryResult::Loading => {
+                    self.summary_loading = true;
+                    self.summary_error = None;
+                }
+                SummaryResult::Error(e) => {
+                    self.summary_loading = false;
+                    self.summary_error = Some(e);
+                }
+                SummaryResult::NoApiKey => {
+                    self.has_api_key = false;
+                    self.summary_loading = false;
+                }
+            },
             NotificationCenterInput::MarkAllRead => {
                 if let Some(tx) = &self.daemon_tx {
                     let _ = tx.send(DaemonCommand::MarkAllRead);
@@ -279,11 +350,12 @@ impl Component for NotificationCenterModel {
 impl NotificationCenterModel {
     fn refresh_count(&mut self) {
         let Some(db) = &self.db else { return };
+        let today = crate::notification_daemon::today_start_utc();
         self.unread_count = db
             .query_row(
                 "SELECT COUNT(*) FROM notifications \
-                 WHERE date(created_at) = date('now') AND read = 0",
-                [],
+                 WHERE created_at >= ?1 AND read = 0",
+                rusqlite::params![today],
                 |row| row.get(0),
             )
             .unwrap_or(0);
@@ -291,10 +363,11 @@ impl NotificationCenterModel {
 
     fn refresh_items(&mut self) {
         let Some(db) = &self.db else { return };
+        let today = crate::notification_daemon::today_start_utc();
 
         let mut stmt = match db.prepare(
             "SELECT id, app_name, summary, body, created_at, read \
-             FROM notifications WHERE date(created_at) = date('now') \
+             FROM notifications WHERE created_at >= ?1 \
              ORDER BY created_at DESC",
         ) {
             Ok(s) => s,
@@ -302,7 +375,7 @@ impl NotificationCenterModel {
         };
 
         let items: Vec<NotifItem> = stmt
-            .query_map([], |row| {
+            .query_map(rusqlite::params![today], |row| {
                 Ok(NotifItem {
                     id: row.get(0)?,
                     app_name: row.get(1)?,
@@ -326,17 +399,48 @@ impl NotificationCenterModel {
             widgets.popup_box.remove(&child);
         }
 
-        // Header
-        let header = Label::new(Some("Notifications"));
+        // Header: title + view toggle button
+        let header = GtkBox::new(Orientation::Horizontal, 0);
         header.set_widget_name("notif-center-popup-header");
-        header.set_halign(gtk4::Align::Start);
+
+        let title = Label::new(Some(match self.view_mode {
+            ViewMode::List => "Notifications",
+            ViewMode::Summary => "AI Summary",
+        }));
+        title.set_halign(gtk4::Align::Start);
+        title.set_hexpand(true);
+        header.append(&title);
+
+        let toggle_icon = match self.view_mode {
+            ViewMode::List => "\u{f0d0}",    // sparkles — switch to summary
+            ViewMode::Summary => "\u{f03a}", // list — switch to list
+        };
+        let toggle_btn = Button::with_label(toggle_icon);
+        toggle_btn.set_widget_name("notif-center-view-toggle");
+        let toggle_sender = sender.input_sender().clone();
+        toggle_btn.connect_clicked(move |_| {
+            toggle_sender.emit(NotificationCenterInput::ToggleViewMode);
+        });
+        header.append(&toggle_btn);
+
         widgets.popup_box.append(&header);
 
+        match self.view_mode {
+            ViewMode::List => self.rebuild_list_view(widgets, sender),
+            ViewMode::Summary => self.rebuild_summary_view(widgets, sender),
+        }
+    }
+
+    fn rebuild_list_view(
+        &self,
+        widgets: &NotificationCenterWidgets,
+        sender: &ComponentSender<Self>,
+    ) {
         // Scrolled list
         let scroll = ScrolledWindow::new();
         scroll.set_vexpand(true);
         scroll.set_min_content_height(100);
-        scroll.set_max_content_height(400);
+        scroll.set_max_content_height(600);
         scroll.set_propagate_natural_height(true);
 
         let list_box = GtkBox::new(Orientation::Vertical, 2);
@@ -375,6 +479,66 @@ impl NotificationCenterModel {
             clear_sender.emit(NotificationCenterInput::ClearAll);
         });
         footer.append(&clear_btn);
+
+        widgets.popup_box.append(&footer);
+    }
+
+    fn rebuild_summary_view(
+        &self,
+        widgets: &NotificationCenterWidgets,
+        sender: &ComponentSender<Self>,
+    ) {
+        let scroll = ScrolledWindow::new();
+        scroll.set_vexpand(true);
+        scroll.set_min_content_height(100);
+        scroll.set_max_content_height(600);
+        scroll.set_propagate_natural_height(true);
+
+        let summary_label = Label::new(None);
+        summary_label.set_widget_name("notif-summary-text");
+        summary_label.set_halign(gtk4::Align::Start);
+        summary_label.set_valign(gtk4::Align::Start);
+        summary_label.set_wrap(true);
+        summary_label.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+
+        if !self.has_api_key {
+            summary_label.set_label(
+                "Add API key to ~/.config/jb-shell/cerebras.json\n\
+                 {\"api_key\": \"csk-...\"}",
+            );
+            summary_label.add_css_class("summary-setup");
+        } else if self.summary_loading {
+            summary_label.set_label("Generating summary...");
+            summary_label.add_css_class("summary-loading");
+        } else if let Some(ref err) = self.summary_error {
+            summary_label.set_label(err);
+            summary_label.add_css_class("summary-error");
+        } else if let Some(ref text) = self.summary_text {
+            summary_label.set_label(text);
+        } else {
+            summary_label.set_label("No summary yet. Click Refresh to generate.");
+            summary_label.add_css_class("summary-loading");
+        }
+
+        scroll.set_child(Some(&summary_label));
+        widgets.popup_box.append(&scroll);
+
+        // Footer with Refresh button
+        let footer = GtkBox::new(Orientation::Horizontal, 8);
+        footer.set_widget_name("notif-center-popup-footer");
+        footer.set_halign(gtk4::Align::End);
+
+        if self.has_api_key {
+            let refresh_btn = Button::with_label("Refresh");
+            let refresh_sender = sender.input_sender().clone();
+            refresh_btn.connect_clicked(move |_| {
+                refresh_sender.emit(NotificationCenterInput::RefreshSummary);
+            });
+            if self.summary_loading {
+                refresh_btn.set_sensitive(false);
+            }
+            footer.append(&refresh_btn);
+        }
 
         widgets.popup_box.append(&footer);
     }
