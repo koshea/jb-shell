@@ -1,6 +1,7 @@
 mod bar;
 mod google_calendar;
 mod hyprland_listener;
+mod notification_daemon;
 mod widgets;
 mod workspace_capture;
 
@@ -17,6 +18,24 @@ use std::rc::Rc;
 use std::sync::mpsc;
 
 const APP_ID: &str = "dev.jb.shell";
+
+fn match_hyprland_monitor(
+    gdk_mon: &gdk4::Monitor,
+    hypr_monitors: &[hyprland::data::Monitor],
+    index: u32,
+) -> String {
+    let geo = gdk_mon.geometry();
+    hypr_monitors
+        .iter()
+        .find(|hm| hm.x == geo.x() && hm.y == geo.y())
+        .map(|hm| hm.name.clone())
+        .unwrap_or_else(|| {
+            hypr_monitors
+                .get(index as usize)
+                .map(|hm| hm.name.clone())
+                .unwrap_or_else(|| format!("unknown-{index}"))
+        })
+}
 
 fn main() {
     let app = Application::builder().application_id(APP_ID).build();
@@ -84,30 +103,66 @@ fn main() {
                 None => continue,
             };
 
-            let geo = gdk_mon.geometry();
-
-            // Find matching Hyprland monitor by (x, y) position
-            let hypr_name = hypr_monitors
-                .iter()
-                .find(|hm| hm.x == geo.x() && hm.y == geo.y())
-                .map(|hm| hm.name.clone());
-
-            let hypr_name = match hypr_name {
-                Some(name) => name,
-                None => {
-                    // Fallback: match by index
-                    hypr_monitors
-                        .get(i as usize)
-                        .map(|hm| hm.name.clone())
-                        .unwrap_or_else(|| format!("unknown-{i}"))
-                }
-            };
+            let hypr_name = match_hyprland_monitor(&gdk_mon, &hypr_monitors, i);
 
             let bar = StatusBar::new(&gdk_mon, &hypr_name);
             bar.window.set_application(Some(app));
             bar.window.present();
             bars.borrow_mut().push(bar);
         }
+
+        // Start notification daemon using the first bar's notification sender
+        if !bars.borrow().is_empty() {
+            let notif_sender = bars.borrow()[0].notification_sender().clone();
+            let daemon_tx = notification_daemon::spawn_notification_daemon(notif_sender.clone());
+            notif_sender.emit(crate::widgets::notifications::NotificationInput::SetDaemonChannel(daemon_tx));
+        }
+
+        // Listen for monitor additions/removals (DPMS, hotplug)
+        let bars_for_signal = bars.clone();
+        let app_for_signal = app.clone();
+        gdk_monitors.connect_items_changed(move |list, position, removed, added| {
+            eprintln!(
+                "jb-shell: monitors changed: pos={position} removed={removed} added={added}"
+            );
+            let mut bars = bars_for_signal.borrow_mut();
+
+            // Remove bars for monitors that no longer exist
+            if removed > 0 {
+                let valid_monitors: Vec<gdk4::Monitor> = (0..list.n_items())
+                    .filter_map(|i| list.item(i)?.downcast::<gdk4::Monitor>().ok())
+                    .collect();
+
+                bars.retain(|bar| {
+                    let still_valid = valid_monitors.iter().any(|vm| vm == &bar.monitor);
+                    if !still_valid {
+                        eprintln!(
+                            "jb-shell: removing bar for disconnected monitor: {}",
+                            bar.monitor_name()
+                        );
+                        bar.destroy();
+                    }
+                    still_valid
+                });
+            }
+
+            // Add bars for new monitors
+            if added > 0 {
+                let hypr_monitors = Monitors::get().map(|m| m.to_vec()).unwrap_or_default();
+                for i in position..(position + added) {
+                    if let Some(gdk_mon) =
+                        list.item(i).and_then(|o| o.downcast::<gdk4::Monitor>().ok())
+                    {
+                        let hypr_name = match_hyprland_monitor(&gdk_mon, &hypr_monitors, i);
+                        eprintln!("jb-shell: adding bar for new monitor: {hypr_name}");
+                        let bar = StatusBar::new(&gdk_mon, &hypr_name);
+                        bar.window.set_application(Some(&app_for_signal));
+                        bar.window.present();
+                        bars.push(bar);
+                    }
+                }
+            }
+        });
 
         // Set up Hyprland event channel using std::sync::mpsc
         let (tx, rx) = mpsc::channel::<HyprlandMsg>();

@@ -40,81 +40,86 @@ fn workspace_monitor(ws_id: i32) -> Option<String> {
 
 pub fn spawn_listener(tx: Sender<HyprlandMsg>) {
     std::thread::spawn(move || {
-        let mut listener = EventListener::new();
+        loop {
+            let mut listener = EventListener::new();
 
-        // Workspace changed (activated)
-        {
-            let tx = tx.clone();
-            listener.add_workspace_changed_handler(move |data| {
-                let ws_id = data.id;
-                if let Some(monitor_name) = workspace_monitor(ws_id) {
-                    let _ = tx.send(HyprlandMsg::WorkspaceChanged {
-                        monitor_name,
-                        workspace_id: ws_id,
-                    });
-                }
-            });
-        }
-
-        // Workspace created
-        {
-            let tx = tx.clone();
-            listener.add_workspace_added_handler(move |data| {
-                let ws_id = data.id;
-                if let Some(monitor_name) = workspace_monitor(ws_id) {
-                    let _ = tx.send(HyprlandMsg::WorkspaceCreated {
-                        workspace_id: ws_id,
-                        monitor_name,
-                    });
-                }
-            });
-        }
-
-        // Workspace destroyed
-        {
-            let tx = tx.clone();
-            listener.add_workspace_deleted_handler(move |data| {
-                let _ = tx.send(HyprlandMsg::WorkspaceDestroyed {
-                    workspace_id: data.id,
+            // Workspace changed (activated)
+            {
+                let tx = tx.clone();
+                listener.add_workspace_changed_handler(move |data| {
+                    let ws_id = data.id;
+                    if let Some(monitor_name) = workspace_monitor(ws_id) {
+                        let _ = tx.send(HyprlandMsg::WorkspaceChanged {
+                            monitor_name,
+                            workspace_id: ws_id,
+                        });
+                    }
                 });
-            });
-        }
+            }
 
-        // Workspace moved to another monitor
-        {
-            let tx = tx.clone();
-            listener.add_workspace_moved_handler(move |data| {
-                let _ = tx.send(HyprlandMsg::WorkspaceMoved {
-                    workspace_id: data.id,
-                    monitor_name: data.monitor.clone(),
+            // Workspace created
+            {
+                let tx = tx.clone();
+                listener.add_workspace_added_handler(move |data| {
+                    let ws_id = data.id;
+                    if let Some(monitor_name) = workspace_monitor(ws_id) {
+                        let _ = tx.send(HyprlandMsg::WorkspaceCreated {
+                            workspace_id: ws_id,
+                            monitor_name,
+                        });
+                    }
                 });
-            });
-        }
+            }
 
-        // Active window changed
-        {
-            let tx = tx.clone();
-            listener.add_active_window_changed_handler(move |data| {
-                let title = data.as_ref().map(|d| d.title.clone()).unwrap_or_default();
-                let _ = tx.send(HyprlandMsg::ActiveWindowChanged { title });
-            });
-        }
-
-        // Monitor focus changed
-        {
-            let tx = tx.clone();
-            listener.add_active_monitor_changed_handler(move |data| {
-                if let Ok(active) = Workspace::get_active() {
-                    let _ = tx.send(HyprlandMsg::MonitorFocusChanged {
-                        monitor_name: data.monitor_name.clone(),
-                        workspace_id: active.id,
+            // Workspace destroyed
+            {
+                let tx = tx.clone();
+                listener.add_workspace_deleted_handler(move |data| {
+                    let _ = tx.send(HyprlandMsg::WorkspaceDestroyed {
+                        workspace_id: data.id,
                     });
-                }
-            });
-        }
+                });
+            }
 
-        if let Err(e) = listener.start_listener() {
-            eprintln!("Hyprland listener error: {e}");
+            // Workspace moved to another monitor
+            {
+                let tx = tx.clone();
+                listener.add_workspace_moved_handler(move |data| {
+                    let _ = tx.send(HyprlandMsg::WorkspaceMoved {
+                        workspace_id: data.id,
+                        monitor_name: data.monitor.clone(),
+                    });
+                });
+            }
+
+            // Active window changed
+            {
+                let tx = tx.clone();
+                listener.add_active_window_changed_handler(move |data| {
+                    let title = data.as_ref().map(|d| d.title.clone()).unwrap_or_default();
+                    let _ = tx.send(HyprlandMsg::ActiveWindowChanged { title });
+                });
+            }
+
+            // Monitor focus changed
+            {
+                let tx = tx.clone();
+                listener.add_active_monitor_changed_handler(move |data| {
+                    if let Ok(active) = Workspace::get_active() {
+                        let _ = tx.send(HyprlandMsg::MonitorFocusChanged {
+                            monitor_name: data.monitor_name.clone(),
+                            workspace_id: active.id,
+                        });
+                    }
+                });
+            }
+
+            if let Err(e) = listener.start_listener() {
+                eprintln!("jb-shell: hyprland listener error: {e}, restarting in 2s");
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            } else {
+                break;
+            }
         }
     });
 }

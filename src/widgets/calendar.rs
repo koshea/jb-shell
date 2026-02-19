@@ -1,7 +1,7 @@
 use crate::google_calendar::{self, CalendarEvent, CalendarResult, CalendarThreadMsg};
 use crate::widgets::notifications::{
     ActionCallback, NotificationAction, NotificationInput, NotificationKind,
-    NotificationRequest, format_countdown, hash_event_id,
+    NotificationRequest, NotificationSource, format_countdown, hash_event_id,
 };
 use chrono::Local;
 use gdk4::Monitor;
@@ -477,6 +477,8 @@ impl CalendarModel {
             css_window_name: None,
             css_box_name: Some("calendar-notif".to_string()),
             css_card_class: None,
+            timeout_ms: None,
+            source: NotificationSource::Internal,
         }
     }
 
@@ -516,6 +518,8 @@ impl CalendarModel {
             css_window_name: Some("calendar-fullscreen".to_string()),
             css_box_name: None,
             css_card_class: Some("fullscreen-card".to_string()),
+            timeout_ms: None,
+            source: NotificationSource::Internal,
         }
     }
 }

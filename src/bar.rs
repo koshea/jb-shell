@@ -18,6 +18,7 @@ use crate::widgets::workspaces::WorkspacesWidget;
 
 pub struct StatusBar {
     pub window: Window,
+    pub monitor: Monitor,
     workspaces: WorkspacesWidget,
     active_window: ActiveWindowWidget,
     // Keep controllers alive — dropping them stops the component
@@ -94,6 +95,7 @@ impl StatusBar {
 
         Self {
             window,
+            monitor: monitor.clone(),
             workspaces,
             active_window,
             _clock: clock,
@@ -153,7 +155,15 @@ impl StatusBar {
         }
     }
 
-    #[allow(dead_code)]
+    pub fn notification_sender(&self) -> &relm4::Sender<crate::widgets::notifications::NotificationInput> {
+        self._notifications.sender()
+    }
+
+    pub fn destroy(&self) {
+        self.window.set_visible(false);
+        self.window.close();
+    }
+
     pub fn monitor_name(&self) -> &str {
         &self.monitor_name
     }

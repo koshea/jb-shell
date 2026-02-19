@@ -14,7 +14,7 @@
 * {
     all: unset;
     color: @fg;
-    font-family: "JetBrains Mono Nerd Font", "JetBrainsMono Nerd Font", monospace;
+    font-family: "MesloLGS NF", "JetBrains Mono Nerd Font", "JetBrainsMono Nerd Font", monospace;
     font-size: 13px;
     font-weight: 500;
     line-height: 1.2;
@@ -323,4 +323,47 @@
 #calendar-fullscreen button.dismiss-btn {
     background-color: alpha(rgb(69, 71, 90), 0.6);
     color: @fg;
+}
+
+/* Freedesktop notifications */
+#fd-notification {
+    background-color: @bg_darker;
+    border: 1px solid @border_color;
+    border-radius: 8px;
+    padding: 12px 16px;
+    min-width: 280px;
+}
+
+#fd-notification .notif-title-label {
+    font-weight: bold;
+    color: @fg;
+}
+
+#fd-notification .notif-event {
+    color: @fg_dim;
+    font-size: 12px;
+}
+
+#fd-notification.urgency-critical {
+    border-color: #f38ba8;
+}
+
+#fd-notification.urgency-low {
+    border-color: alpha(@border_color, 0.15);
+}
+
+#fd-notification button.notif-action {
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    background-color: alpha(rgb(69, 71, 90), 0.6);
+    color: @fg;
+}
+
+#fd-notification button.notif-default-action {
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    background-color: @accent;
+    color: @dark_text;
 }

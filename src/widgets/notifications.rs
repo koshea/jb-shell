@@ -6,7 +6,7 @@ use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use relm4::prelude::*;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub type NotificationId = u64;
 
@@ -17,9 +17,16 @@ pub enum NotificationKind {
 }
 
 #[derive(Clone, Debug)]
+pub enum NotificationSource {
+    Internal,
+    Freedesktop { fd_id: u32 },
+}
+
+#[derive(Clone, Debug)]
 pub enum ActionCallback {
     Dismiss,
     OpenUrl(String),
+    FdAction { fd_id: u32, action_key: String },
 }
 
 #[derive(Clone, Debug)]
@@ -42,6 +49,8 @@ pub struct NotificationRequest {
     pub css_window_name: Option<String>,
     pub css_box_name: Option<String>,
     pub css_card_class: Option<String>,
+    pub timeout_ms: Option<u32>,
+    pub source: NotificationSource,
 }
 
 #[derive(Debug)]
@@ -50,16 +59,19 @@ pub enum NotificationInput {
     Dismiss(NotificationId),
     Tick,
     ActionTriggered(NotificationId, ActionCallback),
+    SetDaemonChannel(std::sync::mpsc::Sender<crate::notification_daemon::DaemonCommand>),
 }
 
 pub struct NotificationModel {
     active: Vec<ActiveNotification>,
+    daemon_tx: Option<std::sync::mpsc::Sender<crate::notification_daemon::DaemonCommand>>,
 }
 
 struct ActiveNotification {
     request: NotificationRequest,
     window: Window,
     title_label: Label,
+    expires_at: Option<Instant>,
 }
 
 pub struct NotificationWidgets {
@@ -89,7 +101,10 @@ impl Component for NotificationModel {
             glib::ControlFlow::Continue
         });
 
-        let model = NotificationModel { active: Vec::new() };
+        let model = NotificationModel {
+            active: Vec::new(),
+            daemon_tx: None,
+        };
         let widgets = NotificationWidgets { monitor };
         ComponentParts { model, widgets }
     }
@@ -104,7 +119,11 @@ impl Component for NotificationModel {
         match message {
             NotificationInput::Show(request) => {
                 // Dismiss existing notification with same ID
-                self.dismiss_by_id(request.id);
+                self.dismiss_by_id_with_reason(request.id, 0);
+
+                let expires_at = request
+                    .timeout_ms
+                    .map(|ms| Instant::now() + Duration::from_millis(ms as u64));
 
                 let window = build_notification_window(&widgets.monitor, &request, &sender);
                 let title_label = find_title_label(&window);
@@ -115,20 +134,36 @@ impl Component for NotificationModel {
                     request,
                     window,
                     title_label,
+                    expires_at,
                 });
 
                 restack_toasts(&self.active);
             }
             NotificationInput::Dismiss(id) => {
-                self.dismiss_by_id(id);
+                self.dismiss_by_id_with_reason(id, 2);
                 restack_toasts(&self.active);
             }
             NotificationInput::Tick => {
-                let now = Local::now();
+                let now_chrono = Local::now();
+                let now_instant = Instant::now();
+                let mut expired_ids = Vec::new();
                 for notif in &self.active {
                     if let Some(target) = notif.request.countdown_target {
-                        notif.title_label.set_label(&format_countdown(target, now));
+                        notif
+                            .title_label
+                            .set_label(&format_countdown(target, now_chrono));
                     }
+                    if let Some(exp) = notif.expires_at {
+                        if now_instant >= exp {
+                            expired_ids.push(notif.request.id);
+                        }
+                    }
+                }
+                if !expired_ids.is_empty() {
+                    for id in expired_ids {
+                        self.dismiss_by_id_with_reason(id, 1);
+                    }
+                    restack_toasts(&self.active);
                 }
             }
             NotificationInput::ActionTriggered(id, callback) => {
@@ -137,21 +172,49 @@ impl Component for NotificationModel {
                     ActionCallback::OpenUrl(url) => {
                         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
                     }
+                    ActionCallback::FdAction {
+                        fd_id,
+                        action_key,
+                    } => {
+                        if let Some(tx) = &self.daemon_tx {
+                            let _ = tx.send(
+                                crate::notification_daemon::DaemonCommand::ActionInvoked {
+                                    id: *fd_id,
+                                    action_key: action_key.clone(),
+                                },
+                            );
+                        }
+                    }
                 }
-                self.dismiss_by_id(id);
+                self.dismiss_by_id_with_reason(id, 2);
                 restack_toasts(&self.active);
+            }
+            NotificationInput::SetDaemonChannel(tx) => {
+                self.daemon_tx = Some(tx);
             }
         }
     }
 }
 
 impl NotificationModel {
-    fn dismiss_by_id(&mut self, id: NotificationId) {
+    fn dismiss_by_id_with_reason(&mut self, id: NotificationId, reason: u32) {
         let mut i = 0;
         while i < self.active.len() {
             if self.active[i].request.id == id {
                 let notif = self.active.remove(i);
                 notif.window.set_visible(false);
+                if reason > 0 {
+                    if let NotificationSource::Freedesktop { fd_id } = notif.request.source {
+                        if let Some(tx) = &self.daemon_tx {
+                            let _ = tx.send(
+                                crate::notification_daemon::DaemonCommand::NotificationClosed {
+                                    id: fd_id,
+                                    reason,
+                                },
+                            );
+                        }
+                    }
+                }
             } else {
                 i += 1;
             }
@@ -169,7 +232,6 @@ fn build_notification_window(
     window.set_layer(Layer::Overlay);
     window.set_exclusive_zone(-1);
     window.set_monitor(Some(monitor));
-
     match &request.kind {
         NotificationKind::Toast => {
             window.set_anchor(Edge::Top, true);
@@ -282,8 +344,10 @@ fn find_title_label(window: &Window) -> Label {
     Label::new(None)
 }
 
+const BAR_HEIGHT_OFFSET: i32 = 40; // ~31px bar + 8px gap + 1px breathing room
+
 fn restack_toasts(active: &[ActiveNotification]) {
-    let mut top_offset = 8;
+    let mut top_offset = BAR_HEIGHT_OFFSET;
     for notif in active {
         match &notif.request.kind {
             NotificationKind::Toast => {
