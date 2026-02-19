@@ -490,9 +490,8 @@ impl NotificationCenterModel {
     ) {
         let scroll = ScrolledWindow::new();
         scroll.set_vexpand(true);
-        scroll.set_min_content_height(100);
+        scroll.set_min_content_height(300);
         scroll.set_max_content_height(600);
-        scroll.set_propagate_natural_height(true);
 
         let summary_label = Label::new(None);
         summary_label.set_widget_name("notif-summary-text");
