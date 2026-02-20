@@ -1,4 +1,3 @@
-use crate::notification_daemon::DaemonCommand;
 use crate::summary_thread::{SummaryResult, SummaryThreadMsg};
 use crate::widgets::notifications::NotificationInput;
 use gdk4::Monitor;
@@ -11,7 +10,6 @@ use relm4::prelude::*;
 use rusqlite::Connection as DbConnection;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::time::Duration;
 
 pub struct NotificationCenterInit {
@@ -29,7 +27,6 @@ pub struct NotificationCenterModel {
     unread_count: u32,
     popup_visible: bool,
     items: Vec<NotifItem>,
-    daemon_tx: Option<mpsc::Sender<DaemonCommand>>,
     notif_sender: relm4::Sender<NotificationInput>,
     db: Option<DbConnection>,
     view_mode: ViewMode,
@@ -50,7 +47,6 @@ struct NotifItem {
 
 #[derive(Debug)]
 pub enum NotificationCenterInput {
-    SetDaemonChannel(mpsc::Sender<DaemonCommand>),
     TogglePopup,
     HidePopup,
     FocusLeave,
@@ -141,10 +137,10 @@ impl Component for NotificationCenterModel {
         });
         popup.add_controller(focus);
 
-        // Open read-only DB connection
+        // Open read-write DB connection so we can mark read / clear directly
         let db = DbConnection::open_with_flags(
             crate::notification_daemon::db_path(),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .ok();
 
@@ -166,7 +162,6 @@ impl Component for NotificationCenterModel {
             unread_count: 0,
             popup_visible: false,
             items: Vec::new(),
-            daemon_tx: None,
             notif_sender,
             db,
             view_mode: ViewMode::List,
@@ -211,9 +206,6 @@ impl Component for NotificationCenterModel {
             NotificationCenterInput::FocusEnter => {
                 cancel_timer(&widgets.close_timer);
                 return;
-            }
-            NotificationCenterInput::SetDaemonChannel(tx) => {
-                self.daemon_tx = Some(tx);
             }
             NotificationCenterInput::TogglePopup => {
                 self.popup_visible = !self.popup_visible;
@@ -289,35 +281,40 @@ impl Component for NotificationCenterModel {
                 }
             },
             NotificationCenterInput::MarkAllRead => {
-                if let Some(tx) = &self.daemon_tx {
-                    let _ = tx.send(DaemonCommand::MarkAllRead);
+                if let Some(db) = &self.db {
+                    let today = crate::notification_daemon::today_start_utc();
+                    let _ = db.execute(
+                        "UPDATE notifications SET read = 1 \
+                         WHERE created_at >= ?1 AND read = 0",
+                        rusqlite::params![today],
+                    );
                 }
-                // Small delay then refresh to let daemon process
-                let refresh_sender = sender.input_sender().clone();
-                glib::timeout_add_local_once(Duration::from_millis(50), move || {
-                    refresh_sender.emit(NotificationCenterInput::Refresh);
-                });
+                self.refresh_items();
+                self.refresh_count();
             }
             NotificationCenterInput::ClearAll => {
-                if let Some(tx) = &self.daemon_tx {
-                    let _ = tx.send(DaemonCommand::ClearAll);
+                if let Some(db) = &self.db {
+                    let today = crate::notification_daemon::today_start_utc();
+                    let _ = db.execute(
+                        "UPDATE notifications SET read = 1 \
+                         WHERE created_at >= ?1",
+                        rusqlite::params![today],
+                    );
                 }
                 self.popup_visible = false;
                 self.notif_sender
                     .emit(NotificationInput::SetCenterOpen(false));
-                let refresh_sender = sender.input_sender().clone();
-                glib::timeout_add_local_once(Duration::from_millis(50), move || {
-                    refresh_sender.emit(NotificationCenterInput::Refresh);
-                });
+                self.refresh_count();
             }
             NotificationCenterInput::MarkItemRead(id) => {
-                if let Some(tx) = &self.daemon_tx {
-                    let _ = tx.send(DaemonCommand::MarkRead { id });
+                if let Some(db) = &self.db {
+                    let _ = db.execute(
+                        "UPDATE notifications SET read = 1 WHERE id = ?1",
+                        rusqlite::params![id],
+                    );
                 }
-                let refresh_sender = sender.input_sender().clone();
-                glib::timeout_add_local_once(Duration::from_millis(50), move || {
-                    refresh_sender.emit(NotificationCenterInput::Refresh);
-                });
+                self.refresh_items();
+                self.refresh_count();
             }
         }
 

@@ -16,9 +16,6 @@ use zbus::zvariant;
 pub enum DaemonCommand {
     NotificationClosed { id: u32, reason: u32 },
     ActionInvoked { id: u32, action_key: String },
-    MarkRead { id: u32 },
-    MarkAllRead,
-    ClearAll,
 }
 
 struct NotificationServer {
@@ -34,8 +31,10 @@ impl NotificationServer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn notify(
+    async fn notify(
         &self,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         app_name: &str,
         replaces_id: u32,
         _app_icon: &str,
@@ -45,6 +44,22 @@ impl NotificationServer {
         hints: HashMap<String, zvariant::OwnedValue>,
         expire_timeout: i32,
     ) -> u32 {
+        // Resolve the sender's PID for window focusing
+        let sender_pid = if let Some(sender) = header.sender() {
+            conn.call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "GetConnectionUnixProcessID",
+                &(sender.as_str(),),
+            )
+            .await
+            .ok()
+            .and_then(|reply| reply.body().deserialize::<u32>().ok())
+        } else {
+            None
+        };
+
         let id = if replaces_id != 0 {
             replaces_id
         } else {
@@ -134,6 +149,8 @@ impl NotificationServer {
             &actions,
             urgency,
             expire_timeout,
+            desktop_entry,
+            sender_pid,
         );
         self.notif_sender.emit(NotificationInput::Show(request));
 
@@ -198,6 +215,8 @@ fn fd_notification_to_request(
     actions: &[String],
     urgency: u8,
     expire_timeout: i32,
+    desktop_entry: Option<String>,
+    sender_pid: Option<u32>,
 ) -> NotificationRequest {
     let has_actions = actions.len() >= 2;
     let timeout_ms = match expire_timeout {
@@ -243,13 +262,11 @@ fn fd_notification_to_request(
         })
         .collect();
 
-    if notif_actions.is_empty() {
-        notif_actions.push(NotificationAction {
-            label: "Dismiss".to_string(),
-            css_class: "notif-action".to_string(),
-            callback: ActionCallback::Dismiss,
-        });
-    }
+    notif_actions.push(NotificationAction {
+        label: "Dismiss".to_string(),
+        css_class: "notif-action".to_string(),
+        callback: ActionCallback::Dismiss,
+    });
 
     let urgency_class = match urgency {
         0 => Some("urgency-low".to_string()),
@@ -277,6 +294,8 @@ fn fd_notification_to_request(
         source: NotificationSource::Freedesktop {
             fd_id,
             app_name: app_name.to_string(),
+            desktop_entry,
+            sender_pid,
         },
     }
 }
@@ -447,40 +466,6 @@ pub fn spawn_notification_daemon(
                         "ActionInvoked",
                         &(id, action_key.as_str()),
                     );
-                }
-                Ok(DaemonCommand::MarkRead { id }) => {
-                    let iface = iface_ref.get();
-                    let db = iface.db.lock();
-                    if let Ok(db) = db {
-                        let _ = db.execute(
-                            "UPDATE notifications SET read = 1 WHERE id = ?1",
-                            rusqlite::params![id],
-                        );
-                    }
-                }
-                Ok(DaemonCommand::MarkAllRead) => {
-                    let iface = iface_ref.get();
-                    let db = iface.db.lock();
-                    if let Ok(db) = db {
-                        let today = today_start_utc();
-                        let _ = db.execute(
-                            "UPDATE notifications SET read = 1 \
-                             WHERE created_at >= ?1 AND read = 0",
-                            rusqlite::params![today],
-                        );
-                    }
-                }
-                Ok(DaemonCommand::ClearAll) => {
-                    let iface = iface_ref.get();
-                    let db = iface.db.lock();
-                    if let Ok(db) = db {
-                        let today = today_start_utc();
-                        let _ = db.execute(
-                            "UPDATE notifications SET read = 1 \
-                             WHERE created_at >= ?1",
-                            rusqlite::params![today],
-                        );
-                    }
                 }
                 Err(_) => break,
             }

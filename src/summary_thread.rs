@@ -1,13 +1,5 @@
-use async_openai::{
-    config::OpenAIConfig,
-    types::{
-        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
-        ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
-    },
-    Client,
-};
 use rusqlite::Connection as DbConnection;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
@@ -164,49 +156,77 @@ const SYSTEM_PROMPT: &str = "You are a notification summarizer. Your ONLY task i
     application where it makes sense. Call out anything that might need their attention \
     or a response. Be concise — short bullet points, no markdown headers, under 200 words.";
 
+#[derive(Serialize)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+    max_completion_tokens: u32,
+}
+
+#[derive(Serialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct ChatResponse {
+    choices: Vec<ChatChoice>,
+}
+
+#[derive(Deserialize)]
+struct ChatChoice {
+    message: ChatChoiceMessage,
+}
+
+#[derive(Deserialize)]
+struct ChatChoiceMessage {
+    content: Option<String>,
+}
+
 async fn generate_summary(
+    client: &reqwest::Client,
     api_key: &str,
     model: &str,
     notifs: &[NotifRow],
 ) -> Result<String, String> {
-    let config = OpenAIConfig::new()
-        .with_api_base("https://api.cerebras.ai/v1")
-        .with_api_key(api_key);
-    let client = Client::with_config(config);
-
     let user_content = format!(
         "<notifications>\n{}\n</notifications>",
         format_notifications_for_prompt(notifs)
     );
 
-    let request = CreateChatCompletionRequestArgs::default()
-        .model(model)
-        .messages(vec![
-            ChatCompletionRequestMessage::System(
-                ChatCompletionRequestSystemMessageArgs::default()
-                    .content(SYSTEM_PROMPT)
-                    .build()
-                    .map_err(|e| e.to_string())?,
-            ),
-            ChatCompletionRequestMessage::User(
-                ChatCompletionRequestUserMessageArgs::default()
-                    .content(user_content)
-                    .build()
-                    .map_err(|e| e.to_string())?,
-            ),
-        ])
-        .max_completion_tokens(512u32)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let request = ChatRequest {
+        model: model.to_string(),
+        messages: vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: SYSTEM_PROMPT.to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: user_content,
+            },
+        ],
+        max_completion_tokens: 512,
+    };
 
     let response = client
-        .chat()
-        .create(request)
+        .post("https://api.cerebras.ai/v1/chat/completions")
+        .bearer_auth(api_key)
+        .json(&request)
+        .send()
         .await
         .map_err(|e| e.to_string())?;
 
-    response
-        .choices
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("API returned {status}: {body}"));
+    }
+
+    let chat: ChatResponse = response.json().await.map_err(|e| e.to_string())?;
+
+    chat.choices
         .first()
         .and_then(|c| c.message.content.clone())
         .ok_or_else(|| "Empty response from API".to_string())
@@ -231,6 +251,7 @@ async fn summary_thread_main(
         }
     };
 
+    let client = reqwest::Client::new();
     let api_key = config.api_key;
     let model = config.model.unwrap_or_else(|| "qwen-3-235b-a22b-instruct-2507".to_string());
 
@@ -295,7 +316,7 @@ async fn summary_thread_main(
 
         send(SummaryResult::Loading);
 
-        match generate_summary(&api_key, &model, &notifs).await {
+        match generate_summary(&client, &api_key, &model, &notifs).await {
             Ok(text) => {
                 send(SummaryResult::Updated(text));
                 last_summary_time = Some(std::time::Instant::now());

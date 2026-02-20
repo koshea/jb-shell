@@ -11,6 +11,7 @@ use crate::widgets::calendar::{CalendarInit, CalendarModel};
 use crate::widgets::clock::ClockModel;
 use crate::widgets::gcloud_config::GcloudModel;
 use crate::widgets::kube_context::KubeModel;
+use crate::widgets::mpris::MprisModel;
 use crate::widgets::network::NetworkModel;
 use crate::widgets::notification_center::{NotificationCenterInit, NotificationCenterModel};
 use crate::widgets::notifications::NotificationModel;
@@ -29,6 +30,7 @@ pub struct StatusBar {
     _network: Controller<NetworkModel>,
     _kube: Controller<KubeModel>,
     _gcloud: Controller<GcloudModel>,
+    _mpris: Controller<MprisModel>,
     _notifications: Controller<NotificationModel>,
     _notification_center: Controller<NotificationCenterModel>,
     _calendar: Controller<CalendarModel>,
@@ -60,6 +62,7 @@ impl StatusBar {
         let network = NetworkModel::builder().launch(()).detach();
         let kube = KubeModel::builder().launch(monitor.clone()).detach();
         let gcloud = GcloudModel::builder().launch(monitor.clone()).detach();
+        let mpris = MprisModel::builder().launch(()).detach();
         let notifications = NotificationModel::builder()
             .launch(monitor.clone())
             .detach();
@@ -91,6 +94,7 @@ impl StatusBar {
         start_box.append(&workspaces.container);
         start_box.append(kube.widget());
         start_box.append(gcloud.widget());
+        start_box.append(mpris.widget());
 
         // Center box
         let center_box = GtkBox::new(Orientation::Horizontal, 0);
@@ -139,6 +143,7 @@ impl StatusBar {
             _network: network,
             _kube: kube,
             _gcloud: gcloud,
+            _mpris: mpris,
             _notifications: notifications,
             _notification_center: notification_center,
             _calendar: calendar,
@@ -195,12 +200,6 @@ impl StatusBar {
         &self,
     ) -> &relm4::Sender<crate::widgets::notifications::NotificationInput> {
         self._notifications.sender()
-    }
-
-    pub fn notification_center_sender(
-        &self,
-    ) -> &relm4::Sender<crate::widgets::notification_center::NotificationCenterInput> {
-        self._notification_center.sender()
     }
 
     pub fn destroy(&self) {

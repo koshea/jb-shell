@@ -40,7 +40,9 @@ impl oauth2::authenticator_delegate::InstalledFlowDelegate for BrowserFlowDelega
         let url = url.to_string();
         Box::pin(async move {
             eprintln!("jb-shell: opening Google OAuth URL in browser");
-            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+            if let Ok(mut child) = std::process::Command::new("xdg-open").arg(&url).spawn() {
+                let _ = child.wait();
+            }
             Ok(String::new())
         })
     }

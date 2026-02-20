@@ -47,9 +47,10 @@ fn main() {
 
     app.connect_activate(move |app| {
         // Prevent app from quitting when all windows are destroyed (e.g. DPMS monitor off).
-        // The guard must be kept alive for the duration of the app.
-        let _hold = app.hold();
-        eprintln!("jb-shell: [lifecycle] activate — hold guard acquired");
+        // The guard is intentionally leaked so the hold is never released — the process
+        // lifetime IS the app lifetime, so this is correct.
+        std::mem::forget(app.hold());
+        eprintln!("jb-shell: [lifecycle] activate — hold guard acquired (permanent)");
         // Load CSS
         let css_provider = CssProvider::new();
         let config_dir = std::env::var("XDG_CONFIG_HOME")
@@ -134,15 +135,7 @@ fn main() {
             let notif_sender = bars.borrow()[0].notification_sender().clone();
             let daemon_tx = notification_daemon::spawn_notification_daemon(notif_sender.clone());
             notif_sender.emit(
-                crate::widgets::notifications::NotificationInput::SetDaemonChannel(
-                    daemon_tx.clone(),
-                ),
-            );
-            let center_sender = bars.borrow()[0].notification_center_sender().clone();
-            center_sender.emit(
-                crate::widgets::notification_center::NotificationCenterInput::SetDaemonChannel(
-                    daemon_tx,
-                ),
+                crate::widgets::notifications::NotificationInput::SetDaemonChannel(daemon_tx),
             );
         }
 
@@ -242,6 +235,15 @@ fn main() {
                 app_for_signal.is_registered(),
                 app_for_signal.windows().len()
             );
+        });
+
+        // Periodic FD count monitor — helps track down file descriptor leaks
+        glib::timeout_add_local(std::time::Duration::from_secs(300), || {
+            if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
+                let count = entries.count();
+                eprintln!("jb-shell: [fd-monitor] open file descriptors: {count}");
+            }
+            glib::ControlFlow::Continue
         });
 
         // Set up Hyprland event channel using std::sync::mpsc

@@ -19,7 +19,12 @@ pub enum NotificationKind {
 #[derive(Clone, Debug)]
 pub enum NotificationSource {
     Internal,
-    Freedesktop { fd_id: u32, app_name: String },
+    Freedesktop {
+        fd_id: u32,
+        app_name: String,
+        desktop_entry: Option<String>,
+        sender_pid: Option<u32>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -194,10 +199,22 @@ impl Component for NotificationModel {
                     ActionCallback::FdAction { fd_id, action_key } => {
                         // Focus the originating app's window
                         if let Some(notif) = self.active.iter().find(|n| n.request.id == id) {
-                            if let NotificationSource::Freedesktop { app_name, .. } =
-                                &notif.request.source
+                            if let NotificationSource::Freedesktop {
+                                app_name,
+                                desktop_entry,
+                                sender_pid,
+                                ..
+                            } = &notif.request.source
                             {
-                                focus_app_window(app_name);
+                                let mut hints: Vec<&str> = Vec::new();
+                                if let Some(de) = desktop_entry {
+                                    hints.push(de);
+                                }
+                                if !app_name.is_empty() {
+                                    hints.push(app_name);
+                                }
+                                let title = &notif.request.title;
+                                focus_app_window(&hints, &[title], *sender_pid);
                             }
                         }
                         if let Some(tx) = &self.daemon_tx {
@@ -420,26 +437,102 @@ pub fn hash_event_id(event_id: &str, suffix: &str) -> NotificationId {
     hasher.finish()
 }
 
-fn focus_app_window(app_name: &str) {
+/// Focus a Hyprland window matching the given hints.
+/// Tries PID-based matching first (walks process tree to find the window),
+/// then class hints with optional title keyword disambiguation.
+/// Switches workspace automatically.
+pub fn focus_app_window(hints: &[&str], title_keywords: &[&str], sender_pid: Option<u32>) {
     use hyprland::data::Clients;
     use hyprland::dispatch::{Dispatch, DispatchType, WindowIdentifier};
     use hyprland::shared::{HyprData, HyprDataVec};
 
-    let app_lower = app_name.to_lowercase();
-    if app_lower.is_empty() {
+    let clients = match Clients::get() {
+        Ok(c) => c.to_vec(),
+        Err(_) => return,
+    };
+
+    // Try PID-based matching: walk up the process tree to find a Hyprland window
+    if let Some(pid) = sender_pid {
+        let window_pids: std::collections::HashSet<i32> =
+            clients.iter().map(|c| c.pid).collect();
+        if let Some(window_pid) = walk_to_window_pid(pid, &window_pids) {
+            if let Some(client) = clients.iter().find(|c| c.pid == window_pid) {
+                let _ = Dispatch::call(DispatchType::FocusWindow(WindowIdentifier::Address(
+                    client.address.clone(),
+                )));
+                return;
+            }
+        }
+    }
+
+    let hints_lower: Vec<String> = hints
+        .iter()
+        .map(|h| h.to_lowercase())
+        .filter(|h| !h.is_empty())
+        .collect();
+
+    if hints_lower.is_empty() {
         return;
     }
 
-    if let Ok(clients) = Clients::get() {
-        // Find the most recently focused window whose class matches the app name
-        if let Some(client) = clients
-            .to_vec()
-            .into_iter()
-            .find(|c| c.class.to_lowercase() == app_lower)
-        {
+    let keywords_lower: Vec<String> = title_keywords
+        .iter()
+        .map(|k| k.to_lowercase())
+        .filter(|k| !k.is_empty())
+        .collect();
+
+    // Collect all candidate windows that match any class hint
+    let mut candidates: Vec<_> = Vec::new();
+    for hint in &hints_lower {
+        for client in &clients {
+            let class = client.class.to_lowercase();
+            if class == *hint || class.contains(hint.as_str()) || hint.contains(class.as_str()) {
+                if !candidates
+                    .iter()
+                    .any(|c: &&hyprland::data::Client| c.address == client.address)
+                {
+                    candidates.push(client);
+                }
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        return;
+    }
+
+    // If we have title keywords, prefer a window whose title matches
+    if !keywords_lower.is_empty() {
+        if let Some(client) = candidates.iter().find(|c| {
+            let title = c.title.to_lowercase();
+            keywords_lower.iter().any(|k| title.contains(k.as_str()))
+        }) {
             let _ = Dispatch::call(DispatchType::FocusWindow(WindowIdentifier::Address(
                 client.address.clone(),
             )));
+            return;
         }
     }
+
+    // Otherwise just focus the first candidate
+    let _ = Dispatch::call(DispatchType::FocusWindow(WindowIdentifier::Address(
+        candidates[0].address.clone(),
+    )));
+}
+
+/// Walk up the process tree from `start_pid` until we find a PID that owns a Hyprland window.
+fn walk_to_window_pid(start_pid: u32, window_pids: &std::collections::HashSet<i32>) -> Option<i32> {
+    let mut pid = start_pid as i32;
+    while pid > 1 {
+        if window_pids.contains(&pid) {
+            return Some(pid);
+        }
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        pid = status
+            .lines()
+            .find(|l| l.starts_with("PPid:"))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|s| s.parse().ok())?;
+    }
+    None
 }
