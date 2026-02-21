@@ -213,6 +213,11 @@ impl Component for NotificationCenterModel {
                     self.refresh_items();
                     self.notif_sender
                         .emit(NotificationInput::SetCenterOpen(true));
+                    if self.view_mode == ViewMode::Summary && self.has_api_key {
+                        let _ = widgets
+                            .summary_thread_tx
+                            .try_send(SummaryThreadMsg::ViewOpened);
+                    }
                 } else {
                     self.notif_sender
                         .emit(NotificationInput::SetCenterOpen(false));
@@ -238,7 +243,7 @@ impl Component for NotificationCenterModel {
                 }
                 let _ = widgets
                     .summary_thread_tx
-                    .try_send(SummaryThreadMsg::NewNotification(_fd_id));
+                    .try_send(SummaryThreadMsg::NewNotification);
             }
             NotificationCenterInput::ToggleViewMode => {
                 self.view_mode = match self.view_mode {

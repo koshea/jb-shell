@@ -4,16 +4,13 @@ use gtk4::{Box as GtkBox, Label, Orientation};
 use relm4::prelude::*;
 use std::collections::HashMap;
 use std::time::Duration;
-use zbus::blocking::Connection;
 use zbus::zvariant::OwnedValue;
 
 pub struct MprisModel {
     playing: bool,
     artist: String,
     title: String,
-    /// Hints for finding the player's Hyprland window (identity, desktop entry, bus name segment)
     focus_hints: Vec<String>,
-    /// Title keywords to disambiguate among multiple windows of the same app
     title_keywords: Vec<String>,
 }
 
@@ -69,36 +66,11 @@ impl SimpleComponent for MprisModel {
 
         let input_sender = sender.input_sender().clone();
         std::thread::spawn(move || {
-            let mut conn: Option<Connection> = None;
-            loop {
-                if conn.is_none() {
-                    conn = Connection::session().ok();
-                }
-
-                if let Some(ref c) = conn {
-                    match poll_mpris(c) {
-                        Ok(Some(info)) => {
-                            input_sender.emit(MprisInput::Update {
-                                artist: info.artist,
-                                title: info.title,
-                                focus_hints: info.focus_hints,
-                                title_keywords: info.title_keywords,
-                            });
-                        }
-                        Ok(None) => {
-                            input_sender.emit(MprisInput::Inactive);
-                        }
-                        Err(_) => {
-                            conn = None;
-                            input_sender.emit(MprisInput::Inactive);
-                        }
-                    }
-                } else {
-                    input_sender.emit(MprisInput::Inactive);
-                }
-
-                std::thread::sleep(Duration::from_secs(3));
-            }
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("mpris tokio runtime");
+            rt.block_on(mpris_poll_loop(input_sender));
         });
 
         let model = MprisModel {
@@ -179,7 +151,48 @@ struct MprisInfo {
     title_keywords: Vec<String>,
 }
 
-fn read_string_prop(conn: &Connection, dest: &str, interface: &str, prop: &str) -> Option<String> {
+async fn mpris_poll_loop(input_sender: relm4::Sender<MprisInput>) {
+    let mut conn: Option<zbus::Connection> = None;
+    // Cache focus hints per player bus name (these don't change)
+    let mut cached_hints: HashMap<String, Vec<String>> = HashMap::new();
+
+    loop {
+        if conn.is_none() {
+            conn = zbus::Connection::session().await.ok();
+        }
+
+        if let Some(ref c) = conn {
+            match poll_mpris(c, &mut cached_hints).await {
+                Ok(Some(info)) => {
+                    input_sender.emit(MprisInput::Update {
+                        artist: info.artist,
+                        title: info.title,
+                        focus_hints: info.focus_hints,
+                        title_keywords: info.title_keywords,
+                    });
+                }
+                Ok(None) => {
+                    input_sender.emit(MprisInput::Inactive);
+                }
+                Err(_) => {
+                    conn = None;
+                    input_sender.emit(MprisInput::Inactive);
+                }
+            }
+        } else {
+            input_sender.emit(MprisInput::Inactive);
+        }
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+}
+
+async fn read_string_prop(
+    conn: &zbus::Connection,
+    dest: &str,
+    interface: &str,
+    prop: &str,
+) -> Option<String> {
     let reply = conn
         .call_method(
             Some(dest),
@@ -188,19 +201,25 @@ fn read_string_prop(conn: &Connection, dest: &str, interface: &str, prop: &str) 
             "Get",
             &(interface, prop),
         )
+        .await
         .ok()?;
     let val: OwnedValue = reply.body().deserialize().ok()?;
     String::try_from(val).ok()
 }
 
-fn poll_mpris(conn: &Connection) -> zbus::Result<Option<MprisInfo>> {
-    let reply = conn.call_method(
-        Some("org.freedesktop.DBus"),
-        "/org/freedesktop/DBus",
-        Some("org.freedesktop.DBus"),
-        "ListNames",
-        &(),
-    )?;
+async fn poll_mpris(
+    conn: &zbus::Connection,
+    cached_hints: &mut HashMap<String, Vec<String>>,
+) -> zbus::Result<Option<MprisInfo>> {
+    let reply = conn
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "ListNames",
+            &(),
+        )
+        .await?;
 
     let names: Vec<String> = reply.body().deserialize()?;
     let mpris_name = match names
@@ -212,19 +231,27 @@ fn poll_mpris(conn: &Connection) -> zbus::Result<Option<MprisInfo>> {
     };
 
     // Read PlaybackStatus
-    let status = read_string_prop(conn, mpris_name, "org.mpris.MediaPlayer2.Player", "PlaybackStatus");
+    let status = read_string_prop(
+        conn,
+        mpris_name,
+        "org.mpris.MediaPlayer2.Player",
+        "PlaybackStatus",
+    )
+    .await;
     if status.as_deref() != Some("Playing") {
         return Ok(None);
     }
 
     // Read Metadata
-    let meta_reply = conn.call_method(
-        Some(mpris_name.as_str()),
-        "/org/mpris/MediaPlayer2",
-        Some("org.freedesktop.DBus.Properties"),
-        "Get",
-        &("org.mpris.MediaPlayer2.Player", "Metadata"),
-    )?;
+    let meta_reply = conn
+        .call_method(
+            Some(mpris_name.as_str()),
+            "/org/mpris/MediaPlayer2",
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &("org.mpris.MediaPlayer2.Player", "Metadata"),
+        )
+        .await?;
 
     let meta_val: OwnedValue = meta_reply.body().deserialize()?;
     let meta_dict: HashMap<String, OwnedValue> = match meta_val.try_into() {
@@ -247,28 +274,45 @@ fn poll_mpris(conn: &Connection) -> zbus::Result<Option<MprisInfo>> {
         return Ok(None);
     }
 
-    // Collect hints for Hyprland window focusing
-    let mut focus_hints = Vec::new();
+    // Get or compute focus hints (cached per player bus name)
+    let focus_hints = cached_hints
+        .entry(mpris_name.clone())
+        .or_insert_with(|| {
+            // Can't await in or_insert_with, compute synchronously from bus name
+            let mut hints = Vec::new();
+            if let Some(player) = mpris_name
+                .strip_prefix("org.mpris.MediaPlayer2.")
+                .map(|s| s.split('.').next().unwrap_or(s).to_string())
+            {
+                hints.push(player);
+            }
+            hints
+        })
+        .clone();
 
-    // DesktopEntry (e.g. "google-chrome", "spotify")
-    if let Some(entry) = read_string_prop(conn, mpris_name, "org.mpris.MediaPlayer2", "DesktopEntry") {
-        focus_hints.push(entry);
+    // Fetch DesktopEntry/Identity once if not yet in cache
+    if cached_hints.get(mpris_name).map_or(true, |h| h.len() <= 1) {
+        let mut hints = cached_hints.get(mpris_name).cloned().unwrap_or_default();
+        if let Some(entry) = read_string_prop(
+            conn,
+            mpris_name,
+            "org.mpris.MediaPlayer2",
+            "DesktopEntry",
+        )
+        .await
+        {
+            hints.insert(0, entry);
+        }
+        if let Some(identity) =
+            read_string_prop(conn, mpris_name, "org.mpris.MediaPlayer2", "Identity").await
+        {
+            hints.push(identity);
+        }
+        cached_hints.insert(mpris_name.clone(), hints);
     }
 
-    // Identity (e.g. "Chrome", "Spotify")
-    if let Some(identity) = read_string_prop(conn, mpris_name, "org.mpris.MediaPlayer2", "Identity") {
-        focus_hints.push(identity);
-    }
+    let focus_hints = cached_hints.get(mpris_name).cloned().unwrap_or(focus_hints);
 
-    // Player name from bus name (e.g. "chromium" from "org.mpris.MediaPlayer2.chromium.instance7186")
-    if let Some(player) = mpris_name
-        .strip_prefix("org.mpris.MediaPlayer2.")
-        .map(|s| s.split('.').next().unwrap_or(s).to_string())
-    {
-        focus_hints.push(player);
-    }
-
-    // Keywords to match against window titles to find the right window
     let mut title_keywords = Vec::new();
     if !title.is_empty() {
         title_keywords.push(title.clone());

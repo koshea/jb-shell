@@ -10,6 +10,7 @@ use bar::StatusBar;
 use hyprland::data::Monitors;
 use hyprland::shared::{HyprData, HyprDataVec};
 use hyprland_listener::HyprlandMsg;
+use relm4::Component;
 
 use gdk4::prelude::*;
 use gtk4::prelude::*;
@@ -139,6 +140,17 @@ fn main() {
             );
         }
 
+        // Create global application launcher (not per-bar).
+        // Leak the controller so the component lives for the process lifetime.
+        let primary_monitor = gdk_monitors
+            .item(0)
+            .and_then(|obj| obj.downcast::<gdk4::Monitor>().ok())
+            .expect("no monitor for launcher");
+        let launcher = widgets::launcher::LauncherModel::builder()
+            .launch(primary_monitor)
+            .detach();
+        std::mem::forget(launcher);
+
         // Listen for monitor additions/removals (DPMS, hotplug)
         let bars_for_signal = bars.clone();
         let app_for_signal = app.clone();
@@ -240,8 +252,50 @@ fn main() {
         // Periodic FD count monitor — helps track down file descriptor leaks
         glib::timeout_add_local(std::time::Duration::from_secs(300), || {
             if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
-                let count = entries.count();
-                eprintln!("jb-shell: [fd-monitor] open file descriptors: {count}");
+                let mut sockets = 0u32;
+                let mut pipes = 0u32;
+                let mut memfd = 0u32;
+                let mut dmabuf = 0u32;
+                let mut reg_files = 0u32;
+                let mut eventfd = 0u32;
+                let mut eventpoll = 0u32;
+                let mut timerfd = 0u32;
+                let mut anon_other = 0u32;
+                let mut other = 0u32;
+                let mut total = 0u32;
+                for entry in entries.flatten() {
+                    total += 1;
+                    if let Ok(link) = std::fs::read_link(entry.path()) {
+                        let s = link.to_string_lossy();
+                        if s.starts_with("socket:") {
+                            sockets += 1;
+                        } else if s.starts_with("pipe:") {
+                            pipes += 1;
+                        } else if s.contains("memfd:") {
+                            memfd += 1;
+                        } else if s.contains("dmabuf") {
+                            dmabuf += 1;
+                        } else if s.starts_with("anon_inode:[eventfd]") {
+                            eventfd += 1;
+                        } else if s.starts_with("anon_inode:[eventpoll]") {
+                            eventpoll += 1;
+                        } else if s.starts_with("anon_inode:[timerfd]") {
+                            timerfd += 1;
+                        } else if s.starts_with("anon_inode:") {
+                            anon_other += 1;
+                        } else if s.starts_with('/') {
+                            reg_files += 1;
+                        } else {
+                            other += 1;
+                        }
+                    }
+                }
+                eprintln!(
+                    "jb-shell: [fd-monitor] total={total} sock={sockets} pipe={pipes} \
+                     memfd={memfd} dmabuf={dmabuf} file={reg_files} \
+                     eventfd={eventfd} epoll={eventpoll} timerfd={timerfd} \
+                     anon_other={anon_other} other={other}"
+                );
             }
             glib::ControlFlow::Continue
         });
