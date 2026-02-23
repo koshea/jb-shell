@@ -312,10 +312,9 @@ fn word_boundary_match(name: &str, query: &str) -> bool {
 
 // ── Exec field processing ────────────────────────────────────────────
 
-fn process_exec(exec: &str) -> Vec<String> {
-    // Strip field codes
-    let cleaned: String = exec
-        .split_whitespace()
+fn process_exec(exec: &str) -> String {
+    // Strip field codes, keep everything else (including env VAR=val)
+    exec.split_whitespace()
         .filter(|tok| {
             !matches!(
                 *tok,
@@ -324,37 +323,23 @@ fn process_exec(exec: &str) -> Vec<String> {
             )
         })
         .collect::<Vec<_>>()
-        .join(" ");
-
-    // Strip env VAR=val prefixes
-    let mut parts: Vec<&str> = cleaned.split_whitespace().collect();
-    while parts.len() > 1 && parts[0].contains('=') && !parts[0].starts_with('/') {
-        // Looks like "env" or "VAR=val"
-        if parts[0] == "env" {
-            parts.remove(0);
-        } else {
-            parts.remove(0);
-        }
-    }
-
-    parts.iter().map(|s| s.to_string()).collect()
+        .join(" ")
 }
 
 fn launch_app(app: &DesktopApp, frecency: &mut HashMap<String, FrecencyEntry>) {
-    let args = process_exec(&app.exec);
-    if args.is_empty() {
+    let exec_line = process_exec(&app.exec);
+    if exec_line.is_empty() {
         return;
     }
 
-    let program = &args[0];
-    let cmd_args = &args[1..];
-
-    match std::process::Command::new(program)
-        .args(cmd_args)
+    // Run through sh -c so env VAR=val prefixes, shell wrapper scripts,
+    // and process substitutions all work correctly.
+    match std::process::Command::new("sh")
+        .args(["-c", &exec_line])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .process_group(0) // setsid equivalent — detach from parent
+        .process_group(0)
         .spawn()
     {
         Ok(_) => {

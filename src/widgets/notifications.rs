@@ -248,7 +248,7 @@ impl NotificationModel {
         while i < self.active.len() {
             if self.active[i].request.id == id {
                 let notif = self.active.remove(i);
-                notif.window.set_visible(false);
+                notif.window.destroy();
                 if reason > 0 {
                     if let NotificationSource::Freedesktop { fd_id, .. } = notif.request.source {
                         if let Some(tx) = &self.daemon_tx {

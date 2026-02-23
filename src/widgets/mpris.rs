@@ -95,13 +95,20 @@ impl SimpleComponent for MprisModel {
                 focus_hints,
                 title_keywords,
             } => {
-                self.playing = true;
-                self.artist = artist;
-                self.title = title;
-                self.focus_hints = focus_hints;
-                self.title_keywords = title_keywords;
+                // Only mutate if something actually changed — avoids unnecessary
+                // widget invalidation that leaks Vulkan dmabuf/sync fds.
+                if !self.playing || self.artist != artist || self.title != title {
+                    self.playing = true;
+                    self.artist = artist;
+                    self.title = title;
+                    self.focus_hints = focus_hints;
+                    self.title_keywords = title_keywords;
+                }
             }
             MprisInput::Inactive => {
+                if !self.playing {
+                    return;
+                }
                 self.playing = false;
                 self.focus_hints.clear();
                 self.title_keywords.clear();
@@ -126,12 +133,20 @@ impl SimpleComponent for MprisModel {
                 format!("{} — {}", self.artist, self.title)
             };
             let truncated = truncate_str(&text, 40);
-            widgets.label.set_label(&truncated);
-            widgets.root.set_visible(true);
-            widgets.root.add_css_class("playing");
+            if widgets.label.label() != truncated {
+                widgets.label.set_label(&truncated);
+            }
+            if !widgets.root.is_visible() {
+                widgets.root.set_visible(true);
+            }
+            if !widgets.root.has_css_class("playing") {
+                widgets.root.add_css_class("playing");
+            }
         } else {
-            widgets.root.set_visible(false);
-            widgets.root.remove_css_class("playing");
+            if widgets.root.is_visible() {
+                widgets.root.set_visible(false);
+                widgets.root.remove_css_class("playing");
+            }
         }
     }
 }
