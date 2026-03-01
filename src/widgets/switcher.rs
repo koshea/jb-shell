@@ -6,6 +6,8 @@ use relm4::prelude::*;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub trait SwitcherProvider: 'static {
@@ -31,6 +33,7 @@ pub struct SwitcherModel<P: SwitcherProvider> {
     current: String,
     items: Vec<String>,
     popup_visible: bool,
+    alive: Arc<AtomicBool>,
     _phantom: PhantomData<P>,
 }
 
@@ -120,18 +123,26 @@ impl<P: SwitcherProvider> Component for SwitcherModel<P> {
         });
         popup.add_controller(focus);
 
-        // Background polling thread
+        // Background polling thread with shutdown flag
+        let alive = Arc::new(AtomicBool::new(true));
+        let thread_alive = alive.clone();
         let input_sender = sender.input_sender().clone();
-        std::thread::spawn(move || loop {
-            let (current, items) = P::poll();
-            input_sender.emit(SwitcherInput::PollResult { current, items });
-            std::thread::sleep(P::POLL_INTERVAL);
+        std::thread::spawn(move || {
+            while thread_alive.load(Ordering::Relaxed) {
+                let (current, items) = P::poll();
+                if !thread_alive.load(Ordering::Relaxed) {
+                    break;
+                }
+                input_sender.emit(SwitcherInput::PollResult { current, items });
+                std::thread::sleep(P::POLL_INTERVAL);
+            }
         });
 
         let model = SwitcherModel {
             current: String::new(),
             items: Vec::new(),
             popup_visible: false,
+            alive,
             _phantom: PhantomData,
         };
         let close_timer = Rc::new(RefCell::new(None));
@@ -231,6 +242,12 @@ impl<P: SwitcherProvider> Component for SwitcherModel<P> {
             cancel_close_timer(&widgets.close_timer);
             widgets.popup.set_visible(false);
         }
+    }
+}
+
+impl<P: SwitcherProvider> Drop for SwitcherModel<P> {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Relaxed);
     }
 }
 
