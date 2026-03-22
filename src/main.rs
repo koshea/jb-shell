@@ -208,39 +208,76 @@ fn main() {
                 });
             }
 
-            // Add bars for new monitors
+            // Add bars for new monitors — deferred to let the compositor/GPU
+            // finish setting up the output.  Creating a Vulkan swapchain too
+            // early can hit VK_ERROR_OUT_OF_DEVICE_MEMORY and SIGSEGV.
             if added > 0 {
-                let hypr_monitors = Monitors::get().map(|m| m.to_vec()).unwrap_or_default();
-                eprintln!(
-                    "jb-shell: [monitor] hyprland monitors: [{}]",
-                    hypr_monitors
-                        .iter()
-                        .map(|m| format!("{}@{}x{}", m.name, m.x, m.y))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                for i in position..(position + added) {
-                    if let Some(gdk_mon) = list
-                        .item(i)
-                        .and_then(|o| o.downcast::<gdk4::Monitor>().ok())
-                    {
-                        let hypr_name = match_hyprland_monitor(&gdk_mon, &hypr_monitors, i);
-                        eprintln!("jb-shell: [monitor] adding bar for new monitor: {hypr_name}");
-                        let bar = StatusBar::new(&gdk_mon, &hypr_name);
-                        bar.window.set_application(Some(&app_for_signal));
-                        bar.window.present();
-                        bars.push(bar);
-                    }
+                let new_monitors: Vec<(gdk4::Monitor, u32)> = (position..(position + added))
+                    .filter_map(|i| {
+                        let mon = list.item(i)?.downcast::<gdk4::Monitor>().ok()?;
+                        Some((mon, i))
+                    })
+                    .collect();
+
+                if !new_monitors.is_empty() {
+                    let bars_deferred = bars_for_signal.clone();
+                    let app_deferred = app_for_signal.clone();
+                    glib::timeout_add_local_once(
+                        std::time::Duration::from_millis(200),
+                        move || {
+                            let hypr_monitors =
+                                Monitors::get().map(|m| m.to_vec()).unwrap_or_default();
+                            eprintln!(
+                                "jb-shell: [monitor] deferred add — hyprland monitors: [{}]",
+                                hypr_monitors
+                                    .iter()
+                                    .map(|m| format!("{}@{}x{}", m.name, m.x, m.y))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                            let mut bars = bars_deferred.borrow_mut();
+                            for (gdk_mon, idx) in &new_monitors {
+                                if !gdk_mon.is_valid() {
+                                    eprintln!(
+                                        "jb-shell: [monitor] skipping invalid monitor at index {idx}"
+                                    );
+                                    continue;
+                                }
+                                let hypr_name =
+                                    match_hyprland_monitor(gdk_mon, &hypr_monitors, *idx);
+                                // Skip if we already have a bar for this monitor name
+                                if bars.iter().any(|b| b.monitor_name() == hypr_name) {
+                                    eprintln!(
+                                        "jb-shell: [monitor] bar already exists for {hypr_name}, skipping"
+                                    );
+                                    continue;
+                                }
+                                eprintln!(
+                                    "jb-shell: [monitor] adding bar for new monitor: {hypr_name}"
+                                );
+                                let bar = StatusBar::new(gdk_mon, &hypr_name);
+                                bar.window.set_application(Some(&app_deferred));
+                                bar.window.present();
+                                bars.push(bar);
+                            }
+                        },
+                    );
                 }
             }
 
+            let pending_adds = added > 0;
             eprintln!(
-                "jb-shell: [monitor] bars after processing: {} — [{}]",
+                "jb-shell: [monitor] bars after removals: {} — [{}]{}",
                 bars.len(),
                 bars.iter()
                     .map(|b| b.monitor_name().to_string())
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join(", "),
+                if pending_adds {
+                    " (adds deferred 200ms)"
+                } else {
+                    ""
+                }
             );
             eprintln!(
                 "jb-shell: [monitor] app is_registered={} windows={}",
